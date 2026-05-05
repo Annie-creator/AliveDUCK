@@ -130,7 +130,7 @@ export function QuickEntryForm() {
 
       <Input
         className="mt-2.5"
-        placeholder="备注"
+        placeholder="详细信息"
         value={note}
         onChange={(e) => setNote(e.target.value)}
       />

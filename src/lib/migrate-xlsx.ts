@@ -19,6 +19,8 @@ import { getDeviceId } from '@/lib/device'
 import { nowIso, toIso } from '@/lib/date'
 import { syncEngine } from '@/lib/sync-engine'
 import { rateToBase, getRates, getBaseCurrency } from '@/lib/currency'
+import { classifyOne } from '@/lib/classifier'
+import { categoryRepo } from '@/repositories'
 
 export interface XlsxImportPreview {
   /** 解析出的待导入流水,已是完整的 FinanceTransaction */
@@ -212,6 +214,31 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
   const baseCurrency = await getBaseCurrency()
   const rates = await getRates()
 
+  // 提前拿分类映射 —— 用于自动归类
+  const cats = await categoryRepo.listAll()
+  const nameToId: Record<string, string> = {}
+  for (const c of cats) {
+    if (!c.deleted_at && c.kind === 'expense') nameToId[c.name] = c.id
+  }
+  // 学习映射(已有交易里 participant→cat 的统计)
+  const learnedMap: Record<string, string> = {}
+  const seenTxs = await db.finance_transactions
+    .filter((t) => !t.deleted_at && !!t.category_id && !!t.participant)
+    .toArray()
+  const tally: Record<string, Record<string, number>> = {}
+  for (const t of seenTxs) {
+    const p = t.participant.trim().toLowerCase()
+    if (!p) continue
+    const catName = cats.find((c) => c.id === t.category_id)?.name
+    if (!catName) continue
+    tally[p] = tally[p] ?? {}
+    tally[p]![catName] = (tally[p]![catName] ?? 0) + 1
+  }
+  for (const [p, byName] of Object.entries(tally)) {
+    const top = Object.entries(byName).sort((a, b) => b[1] - a[1])[0]
+    if (top && top[1] >= 2) learnedMap[p] = top[0]
+  }
+
   dataRows.forEach((r, i) => {
     const lineNo = headerRowIdx + 2 + i
     if (
@@ -299,6 +326,10 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
         ? String(r[columnMap.category] ?? '').trim()
         : ''
 
+    // ── 自动归类(仅支出)──────────────────
+    const category_id =
+      type === 'expense' ? classifyOne(participant, note, learnedMap, nameToId) : null
+
     transactions.push({
       id: uuid(),
       user_id: userId,
@@ -313,7 +344,7 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
       amount,
       currency,
       exchange_rate,
-      category_id: null,
+      category_id,
       from_account_id: null,
       to_account_id: null,
       participant,

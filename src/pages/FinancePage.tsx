@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db'
+import { financeRepo } from '@/repositories'
 import { GlassPanel } from '@/components/ui/GlassPanel'
 import { QuickEntryForm } from '@/components/finance/QuickEntryForm'
 import { BudgetProgress } from '@/components/finance/BudgetProgress'
 import { TransactionEditor } from '@/components/finance/TransactionEditor'
+import { XlsxImporterModal } from '@/components/finance/XlsxImporterModal'
 import { ensureDefaults } from '@/lib/seed-defaults'
 import { formatMoney } from '@/lib/currency'
 import type { FinanceTransaction } from '@/types'
 
 export function FinancePage() {
   const [editing, setEditing] = useState<FinanceTransaction | null>(null)
+  const [showImport, setShowImport] = useState(false)
 
   useEffect(() => {
     void ensureDefaults()
@@ -34,6 +36,11 @@ export function FinancePage() {
     [],
   )
   const catMap = new Map((categories ?? []).map((c) => [c.id, c]))
+
+  async function deleteRow(id: string) {
+    if (!confirm('确认删除这笔交易?')) return
+    await financeRepo.softDelete(id)
+  }
 
   return (
     <div className="space-y-5">
@@ -60,8 +67,9 @@ export function FinancePage() {
             </span>
           </h1>
         </div>
-        <Link
-          to="/settings#xlsx-import"
+        <button
+          type="button"
+          onClick={() => setShowImport(true)}
           className="rounded-xl px-3 py-2 text-xs transition-all hover:opacity-85"
           style={{
             background: 'var(--bn-glass)',
@@ -70,7 +78,7 @@ export function FinancePage() {
           }}
         >
           📊 导入 Excel
-        </Link>
+        </button>
       </div>
 
       <BudgetProgress />
@@ -83,7 +91,7 @@ export function FinancePage() {
             最近交易
           </h2>
           <span className="text-[11px]" style={{ color: 'var(--bn-text-tertiary)' }}>
-            最近 {txs?.length ?? 0} 笔 · 点击编辑
+            最近 {txs?.length ?? 0} 笔 · 点行编辑 · 划过显示删除
           </span>
         </div>
 
@@ -98,23 +106,24 @@ export function FinancePage() {
               const dotColor = cat?.color ?? 'var(--bn-text-tertiary)'
               const isIncome = t.type === 'income'
 
-              // 主标题 = 明细(note);副标题 = 商家(participant)+ 分类 + 日期
-              const primaryText = t.note?.trim() || t.participant || '(未填明细)'
+              // ─── 主标题 = 商家(participant) ────
+              // ─── 副标题 = 详细信息 + 分类 + 日期 ─
+              // 这是新逻辑:商家是主体,details(原 note)是补充
+              const primaryText = t.participant?.trim() || t.note?.trim() || '(未填)'
               const subParts: string[] = []
-              if (t.note?.trim() && t.participant) subParts.push(t.participant)
+              if (t.participant && t.note?.trim()) subParts.push(t.note)
               if (cat?.name) subParts.push(cat.name)
               subParts.push(formatRelativeDate(t.occurred_at))
 
               return (
-                <button
+                <div
                   key={t.id}
-                  type="button"
-                  onClick={() => setEditing(t)}
-                  className="flex w-full items-center gap-3.5 py-2.5 text-left transition-colors hover:bg-white/5"
+                  className="group relative flex items-center gap-3.5 py-2.5"
                   style={{ borderBottom: '0.5px solid var(--bn-row-border)' }}
                 >
+                  {/* 左侧 icon */}
                   <span
-                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs"
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm"
                     style={{
                       background: cat ? `${dotColor}22` : 'var(--bn-glass)',
                       border: `0.5px solid ${dotColor}55`,
@@ -122,22 +131,30 @@ export function FinancePage() {
                   >
                     {cat?.icon ?? '·'}
                   </span>
-                  <div className="min-w-0 flex-1">
+
+                  {/* 中间标题 + 副标题(可点编辑)*/}
+                  <button
+                    type="button"
+                    onClick={() => setEditing(t)}
+                    className="min-w-0 flex-1 text-left transition-colors hover:opacity-90"
+                  >
                     <p
-                      className="truncate text-[13.5px] font-medium"
+                      className="truncate text-[14px] font-medium"
                       style={{ color: 'var(--bn-text-primary)' }}
                     >
                       {primaryText}
                     </p>
                     <p
-                      className="mt-0.5 truncate text-[11.5px]"
+                      className="mt-0.5 truncate text-[12px]"
                       style={{ color: 'var(--bn-text-tertiary)' }}
                     >
                       {subParts.join(' · ')}
                     </p>
-                  </div>
+                  </button>
+
+                  {/* 金额 */}
                   <span
-                    className="bn-mono text-[13.5px]"
+                    className="bn-mono text-[14px] tabular-nums shrink-0"
                     style={{
                       color: isIncome ? 'var(--bn-positive)' : 'var(--bn-text-primary)',
                     }}
@@ -145,7 +162,18 @@ export function FinancePage() {
                     {isIncome ? '+' : '−'}
                     {formatMoney(t.amount, t.currency)}
                   </span>
-                </button>
+
+                  {/* 行内删除按钮(hover/touch 显示)*/}
+                  <button
+                    type="button"
+                    onClick={() => deleteRow(t.id)}
+                    className="rounded-full px-1.5 py-1 text-[11px] opacity-0 transition-opacity group-hover:opacity-100"
+                    style={{ color: 'var(--bn-negative)' }}
+                    aria-label="删除"
+                  >
+                    🗑
+                  </button>
+                </div>
               )
             })}
           </div>
@@ -158,6 +186,8 @@ export function FinancePage() {
           onClose={() => setEditing(null)}
         />
       )}
+
+      {showImport && <XlsxImporterModal onClose={() => setShowImport(false)} />}
     </div>
   )
 }

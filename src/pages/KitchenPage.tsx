@@ -1,39 +1,34 @@
 import { useState } from 'react'
+import { MealPlannerPanel } from '@/components/recipes/MealPlannerPanel'
 import { ShoppingListPanel } from '@/components/shopping/ShoppingListPanel'
 import { PantryPanel } from '@/components/shopping/PantryPanel'
 
-type Tab = 'shopping' | 'pantry'
+type Tab = 'plan' | 'shopping' | 'pantry'
 
-export function ShoppingPage() {
-  const [tab, setTab] = useState<Tab>('shopping')
+export function KitchenPage() {
+  const [tab, setTab] = useState<Tab>('plan')
 
   return (
     <div className="space-y-5">
       <div>
-        <p
-          className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.06em]"
-          style={{ color: 'var(--bn-text-secondary)' }}
-        >
+        <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.06em]"
+          style={{ color: 'var(--bn-text-secondary)' }}>
           KITCHEN
         </p>
-        <h1
-          className="text-[30px] leading-[1.15]"
+        <h1 className="text-[30px] leading-[1.15]"
           style={{
             color: 'var(--bn-text-primary)',
             fontWeight: 500,
             letterSpacing: '-0.03em',
-          }}
-        >
+          }}>
           厨房
-          <span
-            className="ml-2"
+          <span className="ml-2"
             style={{
               color: 'var(--bn-text-tertiary)',
               fontWeight: 300,
               letterSpacing: '-0.02em',
-            }}
-          >
-            买、做、存,一条龙
+            }}>
+            吃啥 / 买啥 / 还有啥
           </span>
         </h1>
       </div>
@@ -45,6 +40,7 @@ export function ShoppingPage() {
           width: 'fit-content',
         }}>
         {([
+          { key: 'plan' as const, label: '🍽 用餐预订' },
           { key: 'shopping' as const, label: '🛒 购物清单' },
           { key: 'pantry' as const, label: '📦 库存' },
         ]).map((t) => (
@@ -65,7 +61,9 @@ export function ShoppingPage() {
         ))}
       </div>
 
-      {tab === 'shopping' ? <ShoppingListPanel /> : <PantryPanel />}
+      {tab === 'plan' && <MealPlannerPanel />}
+      {tab === 'shopping' && <ShoppingListPanel />}
+      {tab === 'pantry' && <PantryPanel />}
     </div>
   )
 }

@@ -1,4 +1,5 @@
 import { GlassPanel } from '@/components/ui/GlassPanel'
+import { DataMaintenanceCard } from '@/components/DataMaintenanceCard'
 
 export function DashboardPage() {
   return (
@@ -31,6 +32,9 @@ export function DashboardPage() {
           </span>
         </h1>
       </div>
+
+      {/* 检测到脏数据时才显示;干净就完全隐身 */}
+      <DataMaintenanceCard />
 
       <GlassPanel padding="lg" radius="lg">
         <h2 className="mb-3 text-base font-medium" style={{ color: 'var(--bn-text-primary)' }}>

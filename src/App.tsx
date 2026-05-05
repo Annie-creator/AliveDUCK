@@ -5,14 +5,11 @@ import { AuthProvider } from '@/auth/AuthProvider'
 import { UserMenu } from '@/auth/UserMenu'
 import { SyncProvider } from '@/lib/sync-context'
 import { DashboardPage } from '@/pages/DashboardPage'
-import { FinancePage } from '@/pages/FinancePage'
-import { AnalyticsPage } from '@/pages/AnalyticsPage'
+import { MoneyPage } from '@/pages/MoneyPage'
 import { CalendarPage } from '@/pages/CalendarPage'
-import { TimerPage } from '@/pages/TimerPage'
-import { HabitsPage } from '@/pages/HabitsPage'
+import { FocusPage } from '@/pages/FocusPage'
+import { KitchenPage } from '@/pages/KitchenPage'
 import { JournalPage } from '@/pages/JournalPage'
-import { RecipesPage } from '@/pages/RecipesPage'
-import { ShoppingPage } from '@/pages/ShoppingPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { MadridSkyline } from '@/components/MadridSkyline'
@@ -22,20 +19,16 @@ import { cn } from '@/lib/cn'
 interface NavMeta {
   to: string
   label: string
-  /** 主导航(始终显示在桌面顶部);其余收进 "更多" 下拉 */
   primary?: boolean
 }
 
 const NAV: NavMeta[] = [
   { to: '/', label: '首页', primary: true },
-  { to: '/finance', label: '记账', primary: true },
-  { to: '/analytics', label: '分析', primary: true },
+  { to: '/money', label: '财务', primary: true },
   { to: '/calendar', label: '日历', primary: true },
-  { to: '/timer', label: '番茄钟', primary: true },
-  { to: '/habits', label: '习惯' },
+  { to: '/focus', label: '专注', primary: true },
+  { to: '/kitchen', label: '厨房', primary: true },
   { to: '/journal', label: '日记' },
-  { to: '/recipes', label: '食谱' },
-  { to: '/shopping', label: '厨房' },
   { to: '/settings', label: '设置' },
 ]
 
@@ -254,14 +247,11 @@ function Shell() {
       <main className="relative z-10 mx-auto max-w-3xl px-5 py-7">
         <Routes>
           <Route path="/" element={<DashboardPage />} />
-          <Route path="/finance" element={<FinancePage />} />
-          <Route path="/analytics" element={<AnalyticsPage />} />
+          <Route path="/money" element={<MoneyPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
-          <Route path="/timer" element={<TimerPage />} />
-          <Route path="/habits" element={<HabitsPage />} />
+          <Route path="/focus" element={<FocusPage />} />
+          <Route path="/kitchen" element={<KitchenPage />} />
           <Route path="/journal" element={<JournalPage />} />
-          <Route path="/recipes" element={<RecipesPage />} />
-          <Route path="/shopping" element={<ShoppingPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/login" element={<LoginPage />} />
         </Routes>
@@ -271,7 +261,7 @@ function Shell() {
         className="relative z-10 mx-auto max-w-3xl px-5 pb-10 pt-6 text-center text-xs"
         style={{ color: 'var(--bn-text-tertiary)' }}
       >
-        Phase 5b · 番茄钟 · 重复事件 · 食谱厨房
+        Phase 6 · 架构整合 · 等待视觉重做
       </footer>
     </>
   )

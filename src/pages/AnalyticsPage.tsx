@@ -8,6 +8,7 @@ import { MonthlyTrendChart } from '@/components/finance/MonthlyTrendChart'
 import { CategoryDonutChart } from '@/components/finance/CategoryDonutChart'
 import { MerchantRanking } from '@/components/finance/MerchantRanking'
 import { ExportButton } from '@/components/finance/ExportButton'
+import { settingsRepo } from '@/repositories'
 import {
   groupByCategory,
   groupByMonth,
@@ -72,6 +73,13 @@ export function AnalyticsPage() {
   const partGroups = useMemo(() => groupByParticipant(txs ?? []), [txs])
   const monthGroups = useMemo(() => groupByMonth(allTxs ?? []), [allTxs])
 
+  // 月预算(响应式)
+  const budget = useLiveQuery(
+    async () => (await settingsRepo.getValue<number>('monthly_budget')) ?? 0,
+    [],
+    0,
+  )
+
   const days = Math.max(
     1,
     Math.round(
@@ -79,6 +87,10 @@ export function AnalyticsPage() {
     ),
   )
   const dailyAvg = stats.expense / days
+  // 可花余额 = 预算 + 收入 − 支出
+  // 仅在 this_month 视图下显示;别的时间段不显示("可花"概念是针对预算月的)
+  const showAvailable = preset === 'this_month' && (budget ?? 0) > 0
+  const available = (budget ?? 0) + stats.income - stats.expense
 
   async function handleBackfill() {
     setBackfillReport('归类中…')
@@ -134,9 +146,15 @@ export function AnalyticsPage() {
         <Stat label="总支出" value={`€ ${stats.expense.toFixed(2)}`} />
         <Stat label="总收入" value={`€ ${stats.income.toFixed(2)}`}
           tone={stats.income > 0 ? 'positive' : 'neutral'} />
-        <Stat label="结余"
-          value={`${stats.balance >= 0 ? '+' : ''}€ ${stats.balance.toFixed(2)}`}
-          tone={stats.balance >= 0 ? 'positive' : 'negative'} />
+        {showAvailable ? (
+          <Stat label="本月还能花"
+            value={`${available >= 0 ? '' : '−'}€ ${Math.abs(available).toFixed(2)}`}
+            tone={available >= 0 ? 'positive' : 'negative'} />
+        ) : (
+          <Stat label="净结余"
+            value={`${stats.balance >= 0 ? '+' : '−'}€ ${Math.abs(stats.balance).toFixed(2)}`}
+            tone={stats.balance >= 0 ? 'positive' : 'negative'} />
+        )}
         <Stat label={`日均(${days}天)`} value={`€ ${dailyAvg.toFixed(2)}`} />
       </div>
 
