@@ -18,6 +18,7 @@ import { getCurrentUserId } from '@/lib/current-user'
 import { getDeviceId } from '@/lib/device'
 import { nowIso, toIso } from '@/lib/date'
 import { syncEngine } from '@/lib/sync-engine'
+import { rateToBase, getRates, getBaseCurrency } from '@/lib/currency'
 
 export interface XlsxImportPreview {
   /** 解析出的待导入流水,已是完整的 FinanceTransaction */
@@ -80,7 +81,8 @@ function parseCurrency(raw: unknown): string {
   if (s === '元' || s === '人民币' || s === 'cny' || s === '¥' || s === 'rmb') return 'CNY'
   if (s === '美' || s === '美元' || s === 'usd' || s === '$') return 'USD'
   if (s === '英镑' || s === 'gbp' || s === '£') return 'GBP'
-  if (s === '日元' || s === 'jpy' || s === '円') return 'JPY'
+  if (s === '丹麦' || s === '丹麦克朗' || s === 'dkk' || s === 'kr') return 'DKK'
+  if (s === '瑞郎' || s === '瑞士法郎' || s === 'chf') return 'CHF'
   return 'EUR'
 }
 
@@ -206,6 +208,10 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
   const userId = getCurrentUserId()
   const deviceId = getDeviceId()
 
+  // 提前拿汇率和本位币 —— 每行交易都需要根据"该行币种"算 exchange_rate
+  const baseCurrency = await getBaseCurrency()
+  const rates = await getRates()
+
   dataRows.forEach((r, i) => {
     const lineNo = headerRowIdx + 2 + i
     if (
@@ -274,6 +280,7 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
     // ── 货币 ─────────────────────────────────
     const currency =
       columnMap.currency !== undefined ? parseCurrency(r[columnMap.currency]) : 'EUR'
+    const exchange_rate = rateToBase(currency, baseCurrency, rates)
 
     // ── 备注 = 明细 + 地点 ──────────────────
     const detail =
@@ -305,7 +312,7 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
       occurred_at: occurredAtIso,
       amount,
       currency,
-      exchange_rate: 1,
+      exchange_rate,
       category_id: null,
       from_account_id: null,
       to_account_id: null,

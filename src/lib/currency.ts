@@ -19,16 +19,21 @@ import { settingsRepo } from '@/repositories'
 export const BASE_CURRENCY_KEY = 'base_currency'
 export const EXCHANGE_RATES_KEY = 'exchange_rates'
 
-export type CurrencyCode = 'EUR' | 'CNY' | 'USD' | 'GBP' | 'JPY' | string
+export type CurrencyCode = 'EUR' | 'USD' | 'DKK' | 'CHF' | 'GBP' | 'CNY' | string
 
-/** 默认设置(一开始没人设过 settings 时用)*/
+/** 用户实际会用到的 6 种货币(欧元 / 美元 / 丹麦克朗 / 瑞士法郎 / 英镑 / 人民币)*/
+export const SUPPORTED_CURRENCIES: string[] = ['EUR', 'USD', 'DKK', 'CHF', 'GBP', 'CNY']
+
+/** 默认设置(一开始没人设过 settings 时用) */
 export const DEFAULT_BASE = 'EUR'
+/** 单位换算口径:1 EUR = X 该币种(参考 2025 年中近似值,用户可在设置里修改) */
 export const DEFAULT_RATES: Record<string, number> = {
   EUR: 1,
-  CNY: 7.8,
-  USD: 0.92,
+  USD: 1.08,
+  DKK: 7.46,
+  CHF: 0.96,
   GBP: 0.85,
-  JPY: 168,
+  CNY: 7.80,
 }
 
 export async function getBaseCurrency(): Promise<string> {

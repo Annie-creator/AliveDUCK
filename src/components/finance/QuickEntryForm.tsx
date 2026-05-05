@@ -5,10 +5,10 @@ import { financeRepo } from '@/repositories'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { GlassPanel } from '@/components/ui/GlassPanel'
-import { rateToBase, getBaseCurrency, getRates, DEFAULT_BASE, DEFAULT_RATES } from '@/lib/currency'
+import { rateToBase, getBaseCurrency, getRates, DEFAULT_BASE, DEFAULT_RATES, SUPPORTED_CURRENCIES } from '@/lib/currency'
 import { classifyOne } from '@/lib/classifier'
 
-const CURRENCY_OPTIONS = ['EUR', 'CNY', 'USD', 'GBP', 'JPY']
+const CURRENCY_OPTIONS = SUPPORTED_CURRENCIES
 
 export function QuickEntryForm() {
   const [type, setType] = useState<'expense' | 'income'>('expense')

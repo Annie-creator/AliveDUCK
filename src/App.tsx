@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { BrowserRouter, NavLink, Route, Routes, useLocation } from 'react-router-dom'
 import { ThemeProvider, useTheme } from '@/themes'
 import { AuthProvider } from '@/auth/AuthProvider'
+import { UserMenu } from '@/auth/UserMenu'
 import { SyncProvider } from '@/lib/sync-context'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { FinancePage } from '@/pages/FinancePage'
@@ -13,6 +14,7 @@ import { JournalPage } from '@/pages/JournalPage'
 import { RecipesPage } from '@/pages/RecipesPage'
 import { ShoppingPage } from '@/pages/ShoppingPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { LoginPage } from '@/pages/LoginPage'
 import { MadridSkyline } from '@/components/MadridSkyline'
 import { SyncBadge } from '@/components/SyncBadge'
 import { cn } from '@/lib/cn'
@@ -234,14 +236,16 @@ function Shell() {
               <NavItem key={item.to} {...item} />
             ))}
             {hasMoreItems && <MoreMenu />}
-            <div className="ml-2 shrink-0">
+            <div className="ml-2 flex shrink-0 items-center gap-2">
               <SyncBadge />
+              <UserMenu />
             </div>
           </nav>
 
           {/* 移动端导航(< md):汉堡 */}
           <div className="flex items-center gap-2 md:hidden">
             <SyncBadge />
+            <UserMenu />
             <HamburgerMenu />
           </div>
         </div>
@@ -259,6 +263,7 @@ function Shell() {
           <Route path="/recipes" element={<RecipesPage />} />
           <Route path="/shopping" element={<ShoppingPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/login" element={<LoginPage />} />
         </Routes>
       </main>
 

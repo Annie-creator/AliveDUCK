@@ -5,13 +5,14 @@ import { Input } from '@/components/ui/Input'
 import {
   DEFAULT_BASE,
   DEFAULT_RATES,
+  SUPPORTED_CURRENCIES,
   getBaseCurrency,
   getRates,
   setBaseCurrency,
   setRates,
 } from '@/lib/currency'
 
-const SUPPORTED = ['EUR', 'CNY', 'USD', 'GBP', 'JPY']
+const SUPPORTED = SUPPORTED_CURRENCIES
 
 export function CurrencySettings() {
   const [base, setBase] = useState(DEFAULT_BASE)

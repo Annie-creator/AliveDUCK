@@ -5,13 +5,14 @@ import { financeRepo } from '@/repositories'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import type { FinanceTransaction } from '@/types'
+import { SUPPORTED_CURRENCIES } from '@/lib/currency'
 
 interface Props {
   transaction: FinanceTransaction
   onClose: () => void
 }
 
-const COMMON_CURRENCIES = ['EUR', 'CNY', 'USD', 'GBP', 'JPY']
+const COMMON_CURRENCIES = SUPPORTED_CURRENCIES
 
 export function TransactionEditor({ transaction, onClose }: Props) {
   const [type, setType] = useState<'income' | 'expense'>(
