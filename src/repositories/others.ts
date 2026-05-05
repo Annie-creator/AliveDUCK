@@ -13,10 +13,6 @@ import type {
   Tag,
 } from '@/types'
 import { BaseRepository } from './base'
-import { nowIso } from '@/lib/date'
-import { v4 as uuid } from 'uuid'
-import { CURRENT_SCHEMA_VERSION } from '@/types'
-import { getDeviceId } from '@/lib/device'
 
 /**
  * 这一组仓库目前只继承 BaseRepository,后续按需加业务方法。
@@ -122,19 +118,8 @@ class SettingRepository extends BaseRepository<Setting> {
     if (existing) {
       await this.update(existing.id, { value } as Partial<Setting>)
     } else {
-      const now = nowIso()
-      await db.settings.add({
-        id: uuid(),
-        user_id: '',
-        created_at: now,
-        updated_at: now,
-        deleted_at: null,
-        sync_status: 'pending',
-        device_id: getDeviceId(),
-        schema_version: CURRENT_SCHEMA_VERSION,
-        key,
-        value,
-      })
+      // 走 create() 而不是裸 db.add() —— 自动注入 user_id + 触发同步
+      await this.create({ key, value } as Omit<Setting, 'id' | 'user_id' | 'created_at' | 'updated_at' | 'deleted_at' | 'sync_status' | 'device_id' | 'schema_version'>)
     }
   }
 }

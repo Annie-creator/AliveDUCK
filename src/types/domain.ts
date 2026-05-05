@@ -41,7 +41,7 @@ export interface Journal extends SyncableEntity {
   content: string
   /** 图片 URL 数组 —— Phase 2 之后走 Supabase Storage,Phase 1 暂存 base64 */
   image_urls: string[]
-  mood: 'great' | 'good' | 'meh' | 'bad' | 'awful' | null
+  mood: 'great' | 'good' | 'meh' | 'bad' | 'awful' | 'tired' | 'anxious' | 'happy' | 'thoughtful' | null
   tag_ids: string[]
 }
 

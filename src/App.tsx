@@ -5,6 +5,9 @@ import { SyncProvider } from '@/lib/sync-context'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { FinancePage } from '@/pages/FinancePage'
 import { AnalyticsPage } from '@/pages/AnalyticsPage'
+import { CalendarPage } from '@/pages/CalendarPage'
+import { HabitsPage } from '@/pages/HabitsPage'
+import { JournalPage } from '@/pages/JournalPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { MadridSkyline } from '@/components/MadridSkyline'
 import { SyncBadge } from '@/components/SyncBadge'
@@ -14,6 +17,9 @@ const NAV: { to: string; label: string }[] = [
   { to: '/', label: '首页' },
   { to: '/finance', label: '记账' },
   { to: '/analytics', label: '分析' },
+  { to: '/calendar', label: '日历' },
+  { to: '/habits', label: '习惯' },
+  { to: '/journal', label: '日记' },
   { to: '/settings', label: '设置' },
 ]
 
@@ -24,7 +30,7 @@ function NavItem({ to, label }: { to: string; label: string }) {
       end
       className={({ isActive }) =>
         cn(
-          'rounded-xl px-3.5 py-2 text-sm transition-all duration-200',
+          'shrink-0 rounded-xl px-2.5 py-1.5 text-[13px] transition-all duration-200',
           isActive ? 'font-medium' : 'hover:bg-white/10',
         )
       }
@@ -90,11 +96,11 @@ function Shell() {
             </span>
           </div>
 
-          <nav className="flex items-center gap-1.5">
+          <nav className="flex items-center gap-0.5 overflow-x-auto">
             {NAV.map((item) => (
               <NavItem key={item.to} {...item} />
             ))}
-            <div className="ml-2">
+            <div className="ml-2 shrink-0">
               <SyncBadge />
             </div>
           </nav>
@@ -107,6 +113,9 @@ function Shell() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/finance" element={<FinancePage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
+          <Route path="/calendar" element={<CalendarPage />} />
+          <Route path="/habits" element={<HabitsPage />} />
+          <Route path="/journal" element={<JournalPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
@@ -115,7 +124,7 @@ function Shell() {
         className="relative z-10 mx-auto max-w-3xl px-5 pb-10 pt-6 text-center text-xs"
         style={{ color: 'var(--bn-text-tertiary)' }}
       >
-        Phase 4 · 多维度分析 · Excel 导出 · 自动同步
+        Phase 5a · 日历 · 习惯 · 日记
       </footer>
     </>
   )
