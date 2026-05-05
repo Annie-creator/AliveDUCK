@@ -88,7 +88,9 @@ export function SettingsPage() {
 
       <CurrencySettings />
 
-      <XlsxImporter />
+      <div id="xlsx-import">
+        <XlsxImporter />
+      </div>
 
       <GlassPanel padding="lg" radius="lg">
         <h2 className="mb-1 text-base font-medium" style={{ color: 'var(--bn-text-primary)' }}>

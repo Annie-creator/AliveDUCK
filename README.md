@@ -48,17 +48,16 @@ npm run dev
 
 ## 日常更新流程
 
-我(Claude)开发的代码会以 PR / commit 的形式进入仓库。你只需:
+我(Claude)开发的代码会以 zip 形式给你。你只需:
+
+1. 解压覆盖到这个目录(`.env.local` 受 `.gitignore` 保护,不会被 zip 影响)
+2. **双击根目录的 `push-to-github.bat`** —— 自动 add / commit / push,完成后弹 Vercel
 
 ```bash
-# 本地拉最新代码
-git pull
-
-# 装新依赖(如果有)
-npm install
-
-# 已经在跑 dev server 的话,Vite 会自动热重载;否则:
-npm run dev
+# 或者手动 3 条命令(等价)
+git add .
+git commit -m "你的消息"
+git push
 ```
 
 线上版本(Vercel)会自动跟随 git push 更新,完全无需操作。

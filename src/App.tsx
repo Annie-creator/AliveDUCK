@@ -1,4 +1,5 @@
-import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { BrowserRouter, NavLink, Route, Routes, useLocation } from 'react-router-dom'
 import { ThemeProvider, useTheme } from '@/themes'
 import { AuthProvider } from '@/auth/AuthProvider'
 import { SyncProvider } from '@/lib/sync-context'
@@ -6,28 +7,42 @@ import { DashboardPage } from '@/pages/DashboardPage'
 import { FinancePage } from '@/pages/FinancePage'
 import { AnalyticsPage } from '@/pages/AnalyticsPage'
 import { CalendarPage } from '@/pages/CalendarPage'
+import { TimerPage } from '@/pages/TimerPage'
 import { HabitsPage } from '@/pages/HabitsPage'
 import { JournalPage } from '@/pages/JournalPage'
+import { RecipesPage } from '@/pages/RecipesPage'
+import { ShoppingPage } from '@/pages/ShoppingPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { MadridSkyline } from '@/components/MadridSkyline'
 import { SyncBadge } from '@/components/SyncBadge'
 import { cn } from '@/lib/cn'
 
-const NAV: { to: string; label: string }[] = [
-  { to: '/', label: '首页' },
-  { to: '/finance', label: '记账' },
-  { to: '/analytics', label: '分析' },
-  { to: '/calendar', label: '日历' },
+interface NavMeta {
+  to: string
+  label: string
+  /** 主导航(始终显示在桌面顶部);其余收进 "更多" 下拉 */
+  primary?: boolean
+}
+
+const NAV: NavMeta[] = [
+  { to: '/', label: '首页', primary: true },
+  { to: '/finance', label: '记账', primary: true },
+  { to: '/analytics', label: '分析', primary: true },
+  { to: '/calendar', label: '日历', primary: true },
+  { to: '/timer', label: '番茄钟', primary: true },
   { to: '/habits', label: '习惯' },
   { to: '/journal', label: '日记' },
+  { to: '/recipes', label: '食谱' },
+  { to: '/shopping', label: '厨房' },
   { to: '/settings', label: '设置' },
 ]
 
-function NavItem({ to, label }: { to: string; label: string }) {
+function NavItem({ to, label, onClick }: NavMeta & { onClick?: () => void }) {
   return (
     <NavLink
       to={to}
       end
+      onClick={onClick}
       className={({ isActive }) =>
         cn(
           'shrink-0 rounded-xl px-2.5 py-1.5 text-[13px] transition-all duration-200',
@@ -46,22 +61,139 @@ function NavItem({ to, label }: { to: string; label: string }) {
   )
 }
 
-function Shell() {
-  const { theme } = useTheme()
+/** 桌面端的更多菜单(放习惯/日记/食谱/厨房/设置)*/
+function MoreMenu() {
+  const [open, setOpen] = useState(false)
+  const moreItems = NAV.filter((n) => !n.primary)
+
+  // 点外部关
+  useEffect(() => {
+    if (!open) return
+    const close = () => setOpen(false)
+    setTimeout(() => document.addEventListener('click', close, { once: true }), 0)
+    return () => document.removeEventListener('click', close)
+  }, [open])
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen(!open)
+        }}
+        className="rounded-xl px-2.5 py-1.5 text-[13px] transition-all hover:bg-white/10"
+        style={{ color: 'var(--bn-text-secondary)' }}
+      >
+        更多 ▾
+      </button>
+      {open && (
+        <div
+          className="absolute right-0 top-full mt-1 min-w-[120px] overflow-hidden rounded-xl py-1 shadow-lg"
+          style={{
+            background: 'var(--bn-glass-strong)',
+            border: '0.5px solid var(--bn-glass-border)',
+            backdropFilter: 'blur(20px)',
+            WebkitBackdropFilter: 'blur(20px)',
+            zIndex: 100,
+          }}
+        >
+          {moreItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end
+              onClick={() => setOpen(false)}
+              className="block px-3 py-1.5 text-[13px] transition-colors hover:bg-white/10"
+              style={({ isActive }) => ({
+                color: isActive ? 'var(--bn-text-primary)' : 'var(--bn-text-secondary)',
+                fontWeight: isActive ? 500 : 400,
+              })}
+            >
+              {item.label}
+            </NavLink>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 移动端汉堡菜单 */
+function HamburgerMenu() {
+  const [open, setOpen] = useState(false)
+  const location = useLocation()
+
+  // 切页面后自动关
+  useEffect(() => {
+    setOpen(false)
+  }, [location.pathname])
 
   return (
     <>
-      {/* 大气背景层:三个 blob,固定在视口,被毛玻璃模糊出光感 */}
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="rounded-lg p-1.5 hover:bg-white/10"
+        style={{ color: 'var(--bn-text-secondary)' }}
+        aria-label="菜单"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <line x1="3" y1="6" x2="21" y2="6" />
+          <line x1="3" y1="12" x2="21" y2="12" />
+          <line x1="3" y1="18" x2="21" y2="18" />
+        </svg>
+      </button>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setOpen(false)}
+          style={{ background: 'rgba(0,0,0,0.4)' }}
+        >
+          <div
+            className="absolute right-0 top-0 h-full w-[200px] p-4"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'var(--bn-bg)',
+              borderLeft: '0.5px solid var(--bn-glass-border)',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="mb-4 text-sm"
+              style={{ color: 'var(--bn-text-tertiary)' }}
+            >
+              ✕ 关闭
+            </button>
+            <nav className="flex flex-col gap-0.5">
+              {NAV.map((n) => (
+                <NavItem key={n.to} {...n} />
+              ))}
+            </nav>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+function Shell() {
+  const { theme } = useTheme()
+  const primaryItems = NAV.filter((n) => n.primary)
+  const hasMoreItems = NAV.some((n) => !n.primary)
+
+  return (
+    <>
       <div className="bn-atmosphere">
         <div className="blob blob-1" />
         <div className="blob blob-2" />
         <div className="blob blob-3" />
       </div>
 
-      {/* 马德里主题独占的天际线 */}
       {theme.hasSkyline && <MadridSkyline />}
 
-      {/* 顶部玻璃栏 */}
       <header
         className="bn-glass sticky top-0 z-20"
         style={{
@@ -96,26 +228,36 @@ function Shell() {
             </span>
           </div>
 
-          <nav className="flex items-center gap-0.5 overflow-x-auto">
-            {NAV.map((item) => (
+          {/* 桌面导航(>= md):主项 + 更多下拉 */}
+          <nav className="hidden md:flex items-center gap-0.5">
+            {primaryItems.map((item) => (
               <NavItem key={item.to} {...item} />
             ))}
+            {hasMoreItems && <MoreMenu />}
             <div className="ml-2 shrink-0">
               <SyncBadge />
             </div>
           </nav>
+
+          {/* 移动端导航(< md):汉堡 */}
+          <div className="flex items-center gap-2 md:hidden">
+            <SyncBadge />
+            <HamburgerMenu />
+          </div>
         </div>
       </header>
 
-      {/* 主内容 */}
       <main className="relative z-10 mx-auto max-w-3xl px-5 py-7">
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/finance" element={<FinancePage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
+          <Route path="/timer" element={<TimerPage />} />
           <Route path="/habits" element={<HabitsPage />} />
           <Route path="/journal" element={<JournalPage />} />
+          <Route path="/recipes" element={<RecipesPage />} />
+          <Route path="/shopping" element={<ShoppingPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
@@ -124,7 +266,7 @@ function Shell() {
         className="relative z-10 mx-auto max-w-3xl px-5 pb-10 pt-6 text-center text-xs"
         style={{ color: 'var(--bn-text-tertiary)' }}
       >
-        Phase 5a · 日历 · 习惯 · 日记
+        Phase 5b · 番茄钟 · 重复事件 · 食谱厨房
       </footer>
     </>
   )

@@ -19,6 +19,24 @@ export interface CalendarEvent extends SyncableEntity {
   tag_ids: string[]
   /** 提醒提前的分钟数,空数组表示不提醒 */
   reminders_minutes: number[]
+  /**
+   * 重复规则。null 表示一次性事件。
+   * 简化的 RRULE 子集 — 满足学生场景:每天 / 每周 N / 每月 / 工作日。
+   */
+  recurrence: RecurrenceRule | null
+}
+
+export interface RecurrenceRule {
+  /** 频率 */
+  freq: 'daily' | 'weekly' | 'monthly'
+  /** weekly 用:1=Mon..7=Sun。daily/monthly 忽略 */
+  by_weekday?: number[]
+  /** 每 N 个周期(默认 1。如 every 2 weeks 就是 2)*/
+  interval?: number
+  /** 截止日期 ISO,空表示永远 */
+  until?: string | null
+  /** 仅对 monthly 有效:月几号(1..31)。空时取 start_at 那天 */
+  by_month_day?: number[]
 }
 
 // ─── 专注计时 ────────────────────────────────────────────────────────────

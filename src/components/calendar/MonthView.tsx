@@ -5,26 +5,24 @@ import { GlassPanel } from '@/components/ui/GlassPanel'
 import {
   CN_MONTHS,
   CN_WEEKDAYS_MON,
-  endOfMonth,
   isSameDay,
   isSameMonth,
   monthGrid,
   startOfMonth,
   toDayKey,
 } from '@/lib/calendar-utils'
-import type { CalendarEvent } from '@/types'
+import { expandRecurring, type ExpandedEvent } from '@/lib/recurrence'
 
 interface Props {
   selectedDay: Date
   onSelectDay: (d: Date) => void
+  onClickEvent: (ev: ExpandedEvent) => void
 }
 
-export function MonthView({ selectedDay, onSelectDay }: Props) {
+export function MonthView({ selectedDay, onSelectDay, onClickEvent }: Props) {
   const [cursor, setCursor] = useState(startOfMonth(selectedDay))
-
   const cells = useMemo(() => monthGrid(cursor), [cursor])
 
-  // 拉本月所有事件(月视图 6 周可能跨入前后月,所以用 cells 边界)
   const startIso = cells[0]!.toISOString()
   const endIso = useMemo(() => {
     const last = new Date(cells[41]!)
@@ -32,22 +30,24 @@ export function MonthView({ selectedDay, onSelectDay }: Props) {
     return last.toISOString()
   }, [cells])
 
-  const events = useLiveQuery(
+  const rawEvents = useLiveQuery(
     () =>
       db.calendar_events
-        .filter(
-          (e) =>
-            !e.deleted_at && e.end_at >= startIso && e.start_at <= endIso,
-        )
+        .filter((e) => !e.deleted_at)
         .toArray(),
-    [startIso, endIso],
+    [],
     [],
   )
 
-  // 每天的事件分桶
+  const events = useMemo(
+    () => expandRecurring(rawEvents ?? [], startIso, endIso),
+    [rawEvents, startIso, endIso],
+  )
+
+  // 按日分组
   const eventsByDay = useMemo(() => {
-    const map = new Map<string, CalendarEvent[]>()
-    for (const ev of events ?? []) {
+    const map = new Map<string, ExpandedEvent[]>()
+    for (const ev of events) {
       const start = new Date(ev.start_at)
       const end = new Date(ev.end_at)
       const cur = new Date(start)
@@ -62,6 +62,10 @@ export function MonthView({ selectedDay, onSelectDay }: Props) {
         cur.setDate(cur.getDate() + 1)
       }
     }
+    // 每天内按开始时间排序
+    for (const arr of map.values()) {
+      arr.sort((a, b) => a.start_at.localeCompare(b.start_at))
+    }
     return map
   }, [events])
 
@@ -73,7 +77,6 @@ export function MonthView({ selectedDay, onSelectDay }: Props) {
 
   return (
     <GlassPanel padding="md" radius="lg">
-      {/* 月份标题 + 翻页 */}
       <div className="mb-2 flex items-center justify-between px-1">
         <button
           type="button"
@@ -104,7 +107,6 @@ export function MonthView({ selectedDay, onSelectDay }: Props) {
         </button>
       </div>
 
-      {/* 周几表头 */}
       <div className="mb-1 grid grid-cols-7">
         {CN_WEEKDAYS_MON.map((w, i) => (
           <div
@@ -119,7 +121,6 @@ export function MonthView({ selectedDay, onSelectDay }: Props) {
         ))}
       </div>
 
-      {/* 6 × 7 格 */}
       <div className="grid grid-cols-7 gap-0.5">
         {cells.map((d) => {
           const k = toDayKey(d)
@@ -129,49 +130,60 @@ export function MonthView({ selectedDay, onSelectDay }: Props) {
           const inMonth = isSameMonth(d, cursor)
 
           return (
-            <button
+            <div
               key={k}
-              type="button"
-              onClick={() => onSelectDay(d)}
-              className="relative flex aspect-square flex-col items-center justify-start rounded-lg p-1 transition-all"
+              className="relative flex flex-col rounded-lg p-1 transition-all"
               style={{
                 background: isSelected ? 'var(--bn-glass-strong)' : 'transparent',
                 border: isSelected
                   ? '0.5px solid var(--bn-accent)'
                   : '0.5px solid transparent',
-                opacity: inMonth ? 1 : 0.35,
+                opacity: inMonth ? 1 : 0.4,
+                minHeight: '64px',
               }}
             >
-              <span
-                className="text-xs"
+              <button
+                type="button"
+                onClick={() => onSelectDay(d)}
+                className="text-left text-[11px] transition-colors hover:opacity-80"
                 style={{
                   color: isToday ? 'var(--bn-accent)' : 'var(--bn-text-primary)',
                   fontWeight: isToday ? 600 : 400,
                 }}
               >
                 {d.getDate()}
-              </span>
-              {/* 事件点(最多 3 个)*/}
-              {dayEvents.length > 0 && (
-                <div className="mt-0.5 flex gap-0.5">
-                  {dayEvents.slice(0, 3).map((ev) => (
-                    <span
-                      key={ev.id}
-                      className="h-1 w-1 rounded-full"
-                      style={{ background: 'var(--bn-accent)' }}
-                    />
-                  ))}
-                  {dayEvents.length > 3 && (
-                    <span
-                      className="text-[8px]"
-                      style={{ color: 'var(--bn-text-tertiary)' }}
-                    >
-                      +{dayEvents.length - 3}
-                    </span>
-                  )}
-                </div>
-              )}
-            </button>
+              </button>
+
+              {/* 事件标题(最多 3 个,超出显示 +N)*/}
+              <div className="mt-0.5 flex-1 space-y-0.5 overflow-hidden">
+                {dayEvents.slice(0, 3).map((ev) => (
+                  <button
+                    key={ev.id}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onClickEvent(ev)
+                    }}
+                    className="block w-full truncate rounded px-1 py-0.5 text-left text-[9px] transition-opacity hover:opacity-85"
+                    style={{
+                      background: ev.is_recurring_instance
+                        ? `${getCssVar('--bn-cat-2')}`
+                        : `${getCssVar('--bn-accent')}`,
+                      color: 'var(--bn-button-fg)',
+                    }}
+                    title={ev.title}
+                  >
+                    {ev.all_day ? ev.title : `${formatHm(ev.start_at)} ${ev.title}`}
+                  </button>
+                ))}
+                {dayEvents.length > 3 && (
+                  <div className="text-[9px]"
+                    style={{ color: 'var(--bn-text-tertiary)' }}>
+                    +{dayEvents.length - 3} 更多
+                  </div>
+                )}
+              </div>
+            </div>
           )
         })}
       </div>
@@ -179,5 +191,12 @@ export function MonthView({ selectedDay, onSelectDay }: Props) {
   )
 }
 
-// 让导入它的代码看到该类型已使用
-void ({} as { _: typeof endOfMonth })
+function getCssVar(name: string): string {
+  // 用变量值即可,React 直接传 var() 也行;为了 inline style 简洁我们直接 var(...)
+  return `var(${name})`
+}
+
+function formatHm(iso: string): string {
+  const d = new Date(iso)
+  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`
+}

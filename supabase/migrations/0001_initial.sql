@@ -130,8 +130,11 @@ create table if not exists public.calendar_events (
   all_day boolean not null default false,
   location text not null default '',
   tag_ids jsonb not null default '[]'::jsonb,
-  reminders_minutes jsonb not null default '[]'::jsonb
+  reminders_minutes jsonb not null default '[]'::jsonb,
+  recurrence jsonb
 );
+-- Phase 5b 给已存在的表追加 recurrence 列(幂等)
+alter table public.calendar_events add column if not exists recurrence jsonb;
 create index if not exists calendar_user_start_idx on public.calendar_events(user_id, start_at);
 create index if not exists calendar_updated_idx on public.calendar_events(user_id, updated_at);
 

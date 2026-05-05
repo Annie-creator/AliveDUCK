@@ -1,14 +1,18 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db'
 import { GlassPanel } from '@/components/ui/GlassPanel'
 import { QuickEntryForm } from '@/components/finance/QuickEntryForm'
 import { BudgetProgress } from '@/components/finance/BudgetProgress'
+import { TransactionEditor } from '@/components/finance/TransactionEditor'
 import { ensureDefaults } from '@/lib/seed-defaults'
 import { formatMoney } from '@/lib/currency'
+import type { FinanceTransaction } from '@/types'
 
 export function FinancePage() {
-  // 启动时确保默认分类已 seed(幂等,有就跳过)
+  const [editing, setEditing] = useState<FinanceTransaction | null>(null)
+
   useEffect(() => {
     void ensureDefaults()
   }, [])
@@ -29,32 +33,44 @@ export function FinancePage() {
     [],
     [],
   )
-
   const catMap = new Map((categories ?? []).map((c) => [c.id, c]))
 
   return (
     <div className="space-y-5">
-      <div>
-        <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.06em]"
-          style={{ color: 'var(--bn-text-secondary)' }}>
-          FINANCE
-        </p>
-        <h1 className="text-[30px] leading-[1.15]"
-          style={{
-            color: 'var(--bn-text-primary)',
-            fontWeight: 500,
-            letterSpacing: '-0.03em',
-          }}>
-          记账
-          <span className="ml-2"
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.06em]"
+            style={{ color: 'var(--bn-text-secondary)' }}>
+            FINANCE
+          </p>
+          <h1 className="text-[30px] leading-[1.15]"
             style={{
-              color: 'var(--bn-text-tertiary)',
-              fontWeight: 300,
-              letterSpacing: '-0.02em',
+              color: 'var(--bn-text-primary)',
+              fontWeight: 500,
+              letterSpacing: '-0.03em',
             }}>
-            日常出入一览
-          </span>
-        </h1>
+            记账
+            <span className="ml-2"
+              style={{
+                color: 'var(--bn-text-tertiary)',
+                fontWeight: 300,
+                letterSpacing: '-0.02em',
+              }}>
+              日常出入一览
+            </span>
+          </h1>
+        </div>
+        <Link
+          to="/settings#xlsx-import"
+          className="rounded-xl px-3 py-2 text-xs transition-all hover:opacity-85"
+          style={{
+            background: 'var(--bn-glass)',
+            color: 'var(--bn-text-secondary)',
+            border: '0.5px solid var(--bn-glass-border)',
+          }}
+        >
+          📊 导入 Excel
+        </Link>
       </div>
 
       <BudgetProgress />
@@ -67,7 +83,7 @@ export function FinancePage() {
             最近交易
           </h2>
           <span className="text-[11px]" style={{ color: 'var(--bn-text-tertiary)' }}>
-            最近 {txs?.length ?? 0} 笔
+            最近 {txs?.length ?? 0} 笔 · 点击编辑
           </span>
         </div>
 
@@ -81,10 +97,20 @@ export function FinancePage() {
               const cat = t.category_id ? catMap.get(t.category_id) : null
               const dotColor = cat?.color ?? 'var(--bn-text-tertiary)'
               const isIncome = t.type === 'income'
+
+              // 主标题 = 明细(note);副标题 = 商家(participant)+ 分类 + 日期
+              const primaryText = t.note?.trim() || t.participant || '(未填明细)'
+              const subParts: string[] = []
+              if (t.note?.trim() && t.participant) subParts.push(t.participant)
+              if (cat?.name) subParts.push(cat.name)
+              subParts.push(formatRelativeDate(t.occurred_at))
+
               return (
-                <div
+                <button
                   key={t.id}
-                  className="flex items-center gap-3.5 py-2.5"
+                  type="button"
+                  onClick={() => setEditing(t)}
+                  className="flex w-full items-center gap-3.5 py-2.5 text-left transition-colors hover:bg-white/5"
                   style={{ borderBottom: '0.5px solid var(--bn-row-border)' }}
                 >
                   <span
@@ -101,16 +127,13 @@ export function FinancePage() {
                       className="truncate text-[13.5px] font-medium"
                       style={{ color: 'var(--bn-text-primary)' }}
                     >
-                      {t.participant || '(未命名)'}
+                      {primaryText}
                     </p>
                     <p
                       className="mt-0.5 truncate text-[11.5px]"
                       style={{ color: 'var(--bn-text-tertiary)' }}
                     >
-                      {cat?.name ?? '未分类'}
-                      {t.note ? ` · ${t.note}` : ''}
-                      {' · '}
-                      {formatRelativeDate(t.occurred_at)}
+                      {subParts.join(' · ')}
                     </p>
                   </div>
                   <span
@@ -122,12 +145,19 @@ export function FinancePage() {
                     {isIncome ? '+' : '−'}
                     {formatMoney(t.amount, t.currency)}
                   </span>
-                </div>
+                </button>
               )
             })}
           </div>
         )}
       </GlassPanel>
+
+      {editing && (
+        <TransactionEditor
+          transaction={editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
   )
 }
