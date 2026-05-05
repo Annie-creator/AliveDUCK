@@ -1,0 +1,129 @@
+@import url('https://cdn.jsdelivr.net/npm/@fontsource-variable/geist/index.css');
+@import url('https://cdn.jsdelivr.net/npm/@fontsource-variable/jetbrains-mono/index.css');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* 纯 sans 堆栈 —— 字体类型一致,层次靠字重+字号+色阶 */
+    --bn-font-body: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'SF Pro Text',
+      'Helvetica Neue', system-ui, sans-serif;
+    --bn-font-cn: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI',
+      'Source Han Sans SC', sans-serif;
+    --bn-font-mono: 'JetBrains Mono Variable', 'SF Mono', 'Cascadia Mono', Menlo, Consolas,
+      monospace;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--bn-font-body), var(--bn-font-cn);
+    color: var(--bn-text-primary);
+    background: var(--bn-bg);
+    background-attachment: fixed;
+    transition: background 0.5s ease, color 0.3s ease;
+    overflow-x: hidden;
+  }
+
+  /* 标题用同一套 sans。层次靠字重(500)和字距(-0.025em),不靠衬线 */
+  h1,
+  h2,
+  h3 {
+    font-family: inherit;
+    font-weight: 500;
+    letter-spacing: -0.025em;
+    margin: 0;
+  }
+
+  p {
+    margin: 0;
+  }
+
+  .bn-mono {
+    font-family: var(--bn-font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+}
+
+.bn-atmosphere {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+.bn-atmosphere .blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(20px);
+}
+.bn-atmosphere .blob-1 {
+  top: -120px;
+  left: -100px;
+  width: 480px;
+  height: 480px;
+  background: radial-gradient(circle, var(--bn-blob-1) 0%, transparent 70%);
+}
+.bn-atmosphere .blob-2 {
+  bottom: -160px;
+  right: -100px;
+  width: 540px;
+  height: 540px;
+  background: radial-gradient(circle, var(--bn-blob-2) 0%, transparent 70%);
+}
+.bn-atmosphere .blob-3 {
+  top: 30%;
+  right: 15%;
+  width: 280px;
+  height: 280px;
+  background: radial-gradient(circle, var(--bn-blob-3) 0%, transparent 70%);
+}
+
+.bn-glass {
+  background: var(--bn-glass);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 0.5px solid var(--bn-glass-border);
+}
+.bn-glass-strong {
+  background: var(--bn-glass-strong);
+  backdrop-filter: blur(24px) saturate(170%);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+  border: 0.5px solid var(--bn-glass-border);
+}
+.bn-glass-thin {
+  background: var(--bn-glass);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  border: 0.5px solid var(--bn-glass-border);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bn-glass-border);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--bn-text-tertiary);
+}
+
+::selection {
+  background: var(--bn-accent);
+  color: var(--bn-button-fg);
+}

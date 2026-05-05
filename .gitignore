@@ -1,0 +1,25 @@
+# dependencies
+node_modules
+.pnpm-store
+
+# build output
+dist
+dist-ssr
+*.local
+
+# editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+
+# logs
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# env (Phase 2 will add VITE_SUPABASE_*)
+.env
+.env.local
+.env.*.local
