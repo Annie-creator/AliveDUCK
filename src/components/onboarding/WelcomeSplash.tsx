@@ -106,7 +106,7 @@ export function WelcomeSplash() {
 
   const hour = new Date().getHours()
   const lang = detectLang()
-  const greeting = pickGreeting(hour)[lang]
+  const greeting = pickGreeting(hour)[lang]!
 
   return (
     <AnimatePresence>

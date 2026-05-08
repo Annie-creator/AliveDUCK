@@ -420,7 +420,10 @@ function addDataBar(
   ws.addConditionalFormatting({
     ref: `${colLetter}${startRow}:${colLetter}${endRow}`,
     rules: [
-      {
+      // ExcelJS 类型定义里 dataBar 不含 color 字段,但实际生成的 XML 支持
+      // 用 as 跳过类型检查,运行时正常
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ({
         type: 'dataBar',
         priority: 1,
         gradient: true,
@@ -432,7 +435,7 @@ function addDataBar(
           { type: 'max' },
         ],
         color: { argb: argbColor },
-      },
+      } as any),
     ],
   })
 }

@@ -7,7 +7,7 @@ import { DataMaintenanceCard } from '@/components/DataMaintenanceCard'
 import { ExportButton } from '@/components/finance/ExportButton'
 import { CurrencySettings } from '@/components/finance/CurrencySettings'
 import { recomputeAllExchangeRates } from '@/lib/recompute-rates'
-import { useExpenseHighlight, useFontScale, useWelcomeCooldownHours, type FontScale } from '@/lib/preferences'
+import { useExpenseHighlight, useFontScale, useWelcomeCooldownHours } from '@/lib/preferences'
 import {
   importLegacyJson,
   listLegacyBackups,

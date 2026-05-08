@@ -4,7 +4,6 @@ import { Pencil, Trash2, Check, X, Play, Pause, Square, SkipForward, PictureInPi
 import { db } from '@/db'
 import { focusRepo } from '@/repositories'
 import { GlassPanel } from '@/components/ui/GlassPanel'
-import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import {
   pomodoroEngine,

@@ -179,5 +179,5 @@ export function getTodayMove(): BaduanjinMove {
   const day = new Date().getDay() // 0=周日, 1=周一, ..., 6=周六
   // 周一(1) → 第 1 式, ..., 周六(6) → 第 6 式, 周日(0) → 第 7 式
   const idx = day === 0 ? 6 : day - 1
-  return BADUANJIN_MOVES[idx]
+  return BADUANJIN_MOVES[idx]!
 }

@@ -71,7 +71,8 @@ const LEGACY_KEY_MAP: Record<string, AmbientSoundKey> = {
 }
 
 function normalizeKey(raw: string): AmbientSoundKey {
-  if (raw in LEGACY_KEY_MAP) return LEGACY_KEY_MAP[raw]
+  const legacy = LEGACY_KEY_MAP[raw]
+  if (legacy) return legacy
   // 检查是否是当前合法 key
   const valid = AMBIENT_SOUNDS.some((s) => s.key === raw)
   return valid ? (raw as AmbientSoundKey) : 'none'
