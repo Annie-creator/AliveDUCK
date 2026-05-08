@@ -5,9 +5,13 @@
  * 但 count() 不是原子的,React StrictMode + 多页面 useEffect 并发
  * 会让多次调用都看到 count=0 → 全部进入 seed 分支 → 重复 N 倍。
  *
- * 现在用两层防护:
+ * 现在用三层防护:
  * 1. **In-flight promise singleton**:模块级缓存,正在 seed 时所有调用 await 同一个 promise
  * 2. **按业务唯一键(name+kind)检查**:即便 promise 缓存被清,真正插入前也按名查一遍
+ * 3. **同步引擎门控(2026-05 新增)**:登录用户必须等 SyncProvider 喊一声
+ *    "首次 pull 完成"才允许 seed。否则会出现:本地 seed 17 个新 UUID,
+ *    与此同时云端 17 个旧 UUID 通过 pull 装进本地 → 34 条同名分类。
+ *    游客模式不需要等(没有云端),SyncProvider 启动时立即放行。
  */
 
 import { categoryRepo, accountRepo } from '@/repositories'
@@ -50,10 +54,46 @@ export interface SeedResult {
 /** 模块级单飞 promise —— 防 React StrictMode 重入 */
 let inFlight: Promise<SeedResult> | null = null
 
+/* ── 同步就绪门控 ─────────────────────────────────────────────────
+ *
+ * SyncProvider 通过 markSyncReady() 通知 seed 现在可以跑了:
+ *   - 游客:SyncProvider 立即调,seed 立即放行
+ *   - 登录:SyncProvider 在 syncEngine.start() 完成(首次 pull 跑完)后调
+ *
+ * 用户切账号:SyncProvider 调 resetSyncReady(),seed 重新等待。
+ *
+ * 默认 isReady = false —— 安全侧错。如果忘了调 markSyncReady,
+ * seed 会卡在 awaitSyncReady() 里不会污染数据。
+ */
+let isSyncReady = false
+let readyWaiters: Array<() => void> = []
+
+export function markSyncReady(): void {
+  if (isSyncReady) return
+  isSyncReady = true
+  const waiters = readyWaiters
+  readyWaiters = []
+  for (const w of waiters) w()
+}
+
+export function resetSyncReady(): void {
+  isSyncReady = false
+}
+
+function awaitSyncReady(): Promise<void> {
+  if (isSyncReady) return Promise.resolve()
+  return new Promise((resolve) => readyWaiters.push(resolve))
+}
+
 export function ensureDefaults(): Promise<SeedResult> {
   if (inFlight) return inFlight
 
-  inFlight = doSeed().finally(() => {
+  inFlight = (async () => {
+    // 关键修复:等 SyncProvider 喊"可以了"再 seed
+    // 防止云端 categories 还没 pull 下来就本地撒新 UUID
+    await awaitSyncReady()
+    return doSeed()
+  })().finally(() => {
     // 完成后保留一段时间(2 秒)再清,容忍非常密集的连环调用
     setTimeout(() => {
       inFlight = null
