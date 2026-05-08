@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="AliveDUCK">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFB07A"/>
+      <stop offset="55%" stop-color="#FF8A95"/>
+      <stop offset="100%" stop-color="#E78AB8"/>
+    </linearGradient>
+    <radialGradient id="bodyGrad" cx="50%" cy="40%" r="65%">
+      <stop offset="0%" stop-color="#FFFEF5"/>
+      <stop offset="100%" stop-color="#F8E9C6"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 圆角方形背景（粉橙渐变）-->
+  <rect width="512" height="512" rx="118" fill="url(#bgGrad)"/>
+
+  <!-- 鸭子身体 -->
+  <ellipse cx="256" cy="328" rx="138" ry="112" fill="url(#bodyGrad)"/>
+
+  <!-- 翅膀（侧后方,做出立体）-->
+  <ellipse cx="328" cy="320" rx="48" ry="78" fill="#F0DFB6" transform="rotate(20 328 320)"/>
+
+  <!-- 鸭子头 -->
+  <circle cx="240" cy="180" r="92" fill="url(#bodyGrad)"/>
+
+  <!-- 头顶呆毛 -->
+  <path d="M 218 90 Q 232 70 246 92 Q 240 102 232 102 Q 222 102 218 90 Z"
+        fill="#F0DFB6"/>
+
+  <!-- 嘴（朝左,橙色椭圆+下嘴） -->
+  <ellipse cx="158" cy="195" rx="44" ry="22" fill="#FF8A2A"/>
+  <path d="M 134 195 Q 132 207 145 212 Q 165 215 195 208 Q 200 200 195 192 Z"
+        fill="#E07020"/>
+
+  <!-- 眼睛 -->
+  <circle cx="248" cy="170" r="14" fill="#1F1A14"/>
+  <circle cx="252" cy="166" r="5" fill="#FFFFFF"/>
+
+  <!-- 腮红 -->
+  <ellipse cx="296" cy="208" rx="16" ry="9" fill="#FFB7C0" opacity="0.7"/>
+</svg>

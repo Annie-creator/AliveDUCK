@@ -22,18 +22,34 @@ interface Preferences {
   fontScale: FontScale
   /** 启动欢迎页冷却时间(小时);0 表示关闭欢迎页 */
   welcomeCooldownHours: number
+  /** App 图标:emoji 字符,默认 🦆 */
+  appIconEmoji: string
+  /** App 图标:用户上传的图片 dataURL,优先级高于 emoji */
+  appIconDataUrl: string | null
+  /** 用户头像 emoji */
+  userAvatarEmoji: string
+  /** 用户头像图片 dataURL,优先级高于 emoji */
+  userAvatarDataUrl: string | null
 }
 
 const DEFAULTS: Preferences = {
   expenseHighlight: false,
   fontScale: 'medium',
   welcomeCooldownHours: 6,
+  appIconEmoji: '🦆',
+  appIconDataUrl: null,
+  userAvatarEmoji: '🦆',
+  userAvatarDataUrl: null,
 }
 
 const STORAGE_KEYS: Record<keyof Preferences, string> = {
   expenseHighlight: 'banya_pref_expense_highlight',
   fontScale: 'banya_pref_font_scale',
   welcomeCooldownHours: 'banya_pref_welcome_cooldown_hours',
+  appIconEmoji: 'banya_pref_app_icon_emoji',
+  appIconDataUrl: 'banya_pref_app_icon_data_url',
+  userAvatarEmoji: 'banya_pref_user_avatar_emoji',
+  userAvatarDataUrl: 'banya_pref_user_avatar_data_url',
 }
 
 // ── 读取/写入 ──────────────────────────────────────────
@@ -67,6 +83,10 @@ let state: Preferences = {
   expenseHighlight: read('expenseHighlight'),
   fontScale: read('fontScale'),
   welcomeCooldownHours: read('welcomeCooldownHours'),
+  appIconEmoji: read('appIconEmoji'),
+  appIconDataUrl: read('appIconDataUrl'),
+  userAvatarEmoji: read('userAvatarEmoji'),
+  userAvatarDataUrl: read('userAvatarDataUrl'),
 }
 
 const listeners = new Set<() => void>()
@@ -137,4 +157,67 @@ export function useWelcomeCooldownHours(): [number, (v: number) => void] {
 /** 非 hook 版本,给非 React 上下文用(如 WelcomeSplash 模块顶层) */
 export function getWelcomeCooldownHours(): number {
   return state.welcomeCooldownHours
+}
+
+export function useAppIcon(): {
+  emoji: string
+  dataUrl: string | null
+  setEmoji: (v: string) => void
+  setDataUrl: (v: string | null) => void
+  reset: () => void
+} {
+  const emoji = useSyncExternalStore(
+    subscribe,
+    () => state.appIconEmoji,
+    () => DEFAULTS.appIconEmoji,
+  )
+  const dataUrl = useSyncExternalStore(
+    subscribe,
+    () => state.appIconDataUrl,
+    () => DEFAULTS.appIconDataUrl,
+  )
+  return {
+    emoji,
+    dataUrl,
+    setEmoji: (v: string) => setPreference('appIconEmoji', v),
+    setDataUrl: (v: string | null) => setPreference('appIconDataUrl', v),
+    reset: () => {
+      setPreference('appIconEmoji', DEFAULTS.appIconEmoji)
+      setPreference('appIconDataUrl', null)
+    },
+  }
+}
+
+export function useUserAvatar(): {
+  emoji: string
+  dataUrl: string | null
+  setEmoji: (v: string) => void
+  setDataUrl: (v: string | null) => void
+  reset: () => void
+} {
+  const emoji = useSyncExternalStore(
+    subscribe,
+    () => state.userAvatarEmoji,
+    () => DEFAULTS.userAvatarEmoji,
+  )
+  const dataUrl = useSyncExternalStore(
+    subscribe,
+    () => state.userAvatarDataUrl,
+    () => DEFAULTS.userAvatarDataUrl,
+  )
+  return {
+    emoji,
+    dataUrl,
+    setEmoji: (v: string) => setPreference('userAvatarEmoji', v),
+    setDataUrl: (v: string | null) => setPreference('userAvatarDataUrl', v),
+    reset: () => {
+      setPreference('userAvatarEmoji', DEFAULTS.userAvatarEmoji)
+      setPreference('userAvatarDataUrl', null)
+    },
+  }
+}
+
+/** 非 hook 版本:用于 App 顶层副作用直接读 app icon */
+export function getAppIcon(): { emoji: string; dataUrl: string | null } {
+  return { emoji: state.appIconEmoji, dataUrl: state.appIconDataUrl }
 }

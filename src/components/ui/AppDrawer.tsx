@@ -16,6 +16,8 @@ import { useTheme } from '@/themes'
 import { THEME_META, THEME_ORDER } from '@/themes/themes'
 import { useAuth } from '@/auth/AuthProvider'
 import { SyncBadge } from '@/components/SyncBadge'
+import { IconPreview } from '@/components/ui/IconPicker'
+import { useUserAvatar } from '@/lib/preferences'
 
 interface NavMeta {
   to: string
@@ -133,27 +135,22 @@ export function AppDrawer({ open, onClose }: AppDrawerProps) {
 /* ── 头部：用户身份 + 关闭按钮 ────────────────────── */
 function DrawerHeader({ onClose }: { onClose: () => void }) {
   const { user, isConfigured, signOut } = useAuth()
+  const userAvatar = useUserAvatar()
   const email = user?.email ?? ''
-  const initial = email.slice(0, 1).toUpperCase() || 'U'
 
   return (
     <div
       className="flex items-center gap-3 px-5 pb-4 pt-5"
       style={{ borderBottom: '0.5px solid var(--bn-row-border)' }}
     >
-      {/* 头像 */}
-      <div
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
-        style={{
-          background: user ? 'var(--bn-accent)' : 'var(--bn-glass)',
-          color: user ? 'var(--bn-button-fg)' : 'var(--bn-text-secondary)',
-          fontSize: 16,
-          fontWeight: 600,
-          letterSpacing: '-0.02em',
-          border: user ? 'none' : '0.5px dashed var(--bn-glass-border)',
-        }}
-      >
-        {user ? initial : '🦆'}
+      {/* 头像 —— 用户在设置里选的 emoji 或上传的图,默认 🦆 */}
+      <div style={{ opacity: user ? 1 : 0.7 }}>
+        <IconPreview
+          emoji={userAvatar.emoji}
+          dataUrl={userAvatar.dataUrl}
+          size={40}
+          radius="50%"
+        />
       </div>
 
       <div className="min-w-0 flex-1">

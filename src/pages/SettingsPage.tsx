@@ -7,7 +7,8 @@ import { DataMaintenanceCard } from '@/components/DataMaintenanceCard'
 import { ExportButton } from '@/components/finance/ExportButton'
 import { CurrencySettings } from '@/components/finance/CurrencySettings'
 import { recomputeAllExchangeRates } from '@/lib/recompute-rates'
-import { useExpenseHighlight, useFontScale, useWelcomeCooldownHours } from '@/lib/preferences'
+import { useExpenseHighlight, useFontScale, useWelcomeCooldownHours, useAppIcon, useUserAvatar } from '@/lib/preferences'
+import { IconPicker } from '@/components/ui/IconPicker'
 import {
   importLegacyJson,
   listLegacyBackups,
@@ -93,6 +94,8 @@ function AppearanceTab() {
   const [expenseHighlight, setExpenseHighlight] = useExpenseHighlight()
   const [fontScale, setFontScale] = useFontScale()
   const [welcomeCooldown, setWelcomeCooldown] = useWelcomeCooldownHours()
+  const appIcon = useAppIcon()
+  const userAvatar = useUserAvatar()
 
   return (
     <div className="space-y-5">
@@ -161,6 +164,83 @@ function AppearanceTab() {
               </button>
             )
           })}
+        </div>
+      </GlassPanel>
+
+      {/* ── App 图标 ────────────────────────────────── */}
+      <GlassPanel padding="lg" radius="lg" variant="default">
+        <div
+          style={{
+            fontSize: 'var(--bn-text-md)',
+            fontWeight: 500,
+            color: 'var(--bn-text-primary)',
+            letterSpacing: '-0.01em',
+          }}
+        >
+          App 图标
+        </div>
+        <p
+          style={{
+            marginTop: 2,
+            fontSize: 'var(--bn-text-sm)',
+            color: 'var(--bn-text-tertiary)',
+            letterSpacing: '-0.005em',
+            lineHeight: 1.5,
+          }}
+        >
+          浏览器 tab 上和"添加到主屏幕"时显示的图标。改 emoji 立即生效;改完
+          PWA 图标需要重新"添加到主屏幕"才会更新。
+        </p>
+        <div className="mt-3">
+          <IconPicker
+            emoji={appIcon.emoji}
+            dataUrl={appIcon.dataUrl}
+            defaultEmoji="🦆"
+            emojiSuggestions={['🦆', '🐥', '🦄', '🌸', '🍑', '🌈', '⭐', '🍵', '🐱']}
+            onEmojiChange={appIcon.setEmoji}
+            onDataUrlChange={appIcon.setDataUrl}
+            onReset={appIcon.reset}
+            size={64}
+            shape="rounded"
+          />
+        </div>
+      </GlassPanel>
+
+      {/* ── 用户头像 ────────────────────────────────── */}
+      <GlassPanel padding="lg" radius="lg" variant="default">
+        <div
+          style={{
+            fontSize: 'var(--bn-text-md)',
+            fontWeight: 500,
+            color: 'var(--bn-text-primary)',
+            letterSpacing: '-0.01em',
+          }}
+        >
+          用户头像
+        </div>
+        <p
+          style={{
+            marginTop: 2,
+            fontSize: 'var(--bn-text-sm)',
+            color: 'var(--bn-text-tertiary)',
+            letterSpacing: '-0.005em',
+            lineHeight: 1.5,
+          }}
+        >
+          抽屉左上角小圆圈显示的头像。可以是 emoji,也可以上传一张你自己的照片。
+        </p>
+        <div className="mt-3">
+          <IconPicker
+            emoji={userAvatar.emoji}
+            dataUrl={userAvatar.dataUrl}
+            defaultEmoji="🦆"
+            emojiSuggestions={['🦆', '👤', '🧑', '👩', '👧', '🐱', '🐰', '🌸', '🍑']}
+            onEmojiChange={userAvatar.setEmoji}
+            onDataUrlChange={userAvatar.setDataUrl}
+            onReset={userAvatar.reset}
+            size={56}
+            shape="circle"
+          />
         </div>
       </GlassPanel>
 

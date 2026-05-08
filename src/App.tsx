@@ -14,7 +14,7 @@ import { ThemeProvider, useTheme } from '@/themes'
 import { AuthProvider } from '@/auth/AuthProvider'
 import { UserMenu } from '@/auth/UserMenu'
 import { SyncProvider } from '@/lib/sync-context'
-import { useFontScale } from '@/lib/preferences'
+import { useFontScale, useAppIcon } from '@/lib/preferences'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { MoneyPage } from '@/pages/MoneyPage'
 import { CalendarPage } from '@/pages/CalendarPage'
@@ -76,11 +76,34 @@ function Shell() {
   const { theme } = useTheme()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [fontScale] = useFontScale()
+  const appIcon = useAppIcon()
 
   // 把字体档位写到 <html> 的 data 属性,index.css 里读 [data-font-scale="..."]
   useEffect(() => {
     document.documentElement.setAttribute('data-font-scale', fontScale)
   }, [fontScale])
+
+  // 动态 favicon —— 跟 App 图标偏好走
+  // 优先级:用户上传的 dataUrl > emoji 渲染成 SVG > 默认 /icon.svg
+  useEffect(() => {
+    const link = document.getElementById('bn-favicon') as HTMLLinkElement | null
+    const apple = document.getElementById('bn-apple-icon') as HTMLLinkElement | null
+    if (!link && !apple) return
+
+    let href: string
+    if (appIcon.dataUrl) {
+      href = appIcon.dataUrl
+    } else if (appIcon.emoji && appIcon.emoji !== '🦆') {
+      // 把 emoji 渲染到 SVG 上,跟默认图标背景一致
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFB07A"/><stop offset="55%" stop-color="#FF8A95"/><stop offset="100%" stop-color="#E78AB8"/></linearGradient></defs><rect width="100" height="100" rx="22" fill="url(#g)"/><text x="50" y="58" font-size="60" text-anchor="middle" dominant-baseline="middle">${appIcon.emoji}</text></svg>`
+      href = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)))
+    } else {
+      // 默认鸭子 SVG
+      href = '/icon.svg'
+    }
+    if (link) link.href = href
+    if (apple) apple.href = href
+  }, [appIcon.emoji, appIcon.dataUrl])
 
   return (
     <>
