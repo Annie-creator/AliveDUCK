@@ -8,6 +8,7 @@ import { MonthlyTrendChart } from '@/components/finance/MonthlyTrendChart'
 import { CategoryDonutChart } from '@/components/finance/CategoryDonutChart'
 import { MerchantRanking } from '@/components/finance/MerchantRanking'
 import { ExportButton } from '@/components/finance/ExportButton'
+import { TransactionList } from '@/components/finance/TransactionList'
 import { settingsRepo } from '@/repositories'
 import {
   groupByCategory,
@@ -20,7 +21,7 @@ import {
 import { ensureDefaults } from '@/lib/seed-defaults'
 import { backfillCategories } from '@/lib/classifier'
 
-type Tab = 'overview' | 'category' | 'merchant' | 'trend'
+type Tab = 'overview' | 'category' | 'merchant' | 'trend' | 'transactions'
 
 export function AnalyticsPage() {
   const [preset, setPreset] = useState<TimeRangePreset>('this_month')
@@ -165,6 +166,7 @@ export function AnalyticsPage() {
           { key: 'category', label: '按分类' },
           { key: 'merchant', label: '按商家' },
           { key: 'trend', label: '月度趋势' },
+          { key: 'transactions', label: '明细' },
         ] as Array<{ key: Tab; label: string }>).map((t) => {
           const active = tab === t.key
           return (
@@ -246,6 +248,14 @@ export function AnalyticsPage() {
           </p>
           <MonthlyTrendChart data={monthGroups} />
         </GlassPanel>
+      )}
+
+      {tab === 'transactions' && (
+        <TransactionList
+          transactions={txs ?? []}
+          categories={categories ?? []}
+          title={`${range.label}的全部交易`}
+        />
       )}
 
       {/* 数据治理 */}

@@ -9,6 +9,13 @@
  * 5. 两阶段提交 —— parse 出预览,UI 让用户确认,再 commit 落库
  * 6. **xlsx 库通过 dynamic import 加载** —— 350KB 的库只在用户导入时下载,
  *    首屏不背锅
+ *
+ * 归类策略（v2，2026-05）:
+ * - 商家列（merchant）→ 进 participant 字段
+ * - 分类列（categoryName）→ 按分类名直接映射 category_id
+ *   · 命中（精确 / 大小写无关）→ 用这个 category_id，跳过自动分类
+ *   · 未命中 → 自动分类器兜底（关键字 + 学习映射），并落一条 warning
+ *   · 列缺失 → 自动分类器兜底（与 v1 行为一致，向后兼容）
  */
 
 import { v4 as uuid } from 'uuid'
@@ -33,6 +40,17 @@ export interface XlsxImportPreview {
   columnMap: ColumnMap
   /** 表头所在行(1-based,给警告标号用)*/
   headerRow: number
+  /** 这次导入按"分类列"匹配上的统计（让用户能看到效果）*/
+  categoryMatchStats?: {
+    /** 通过分类列直接命中的行数 */
+    matchedByName: number
+    /** 通过自动分类器兜底归类的行数 */
+    matchedByClassifier: number
+    /** 仍是未分类的行数 */
+    uncategorized: number
+    /** 分类列里出现过、但在系统里找不到的名字（最多 10 个，去重）*/
+    unmatchedNames: string[]
+  }
 }
 
 interface ColumnMap {
@@ -41,38 +59,87 @@ interface ColumnMap {
   day?: number
   date?: number
   type?: number
-  category?: number
+  /** 商家 / 交易对象 —— 进 participant 字段 */
+  merchant?: number
+  /** 分类名 —— 按名直接映射到 category_id */
+  categoryName?: number
   detail?: number
   amount?: number
   currency?: number
   location?: number
 }
 
+/**
+ * 表头别名。
+ *
+ * ⚠️ 注意"类别" vs "分类"在中文里语义重叠：
+ * - 老模板（Annie 的旧 Excel）里"类别"列实际是商家名 → 归到 merchant
+ * - 新模板里如果同时有"商家"和"分类"两列，分别归位
+ * - "分类 / 类目 / category" 严格归到 categoryName（更具体的语义）
+ */
 const HEADER_ALIASES: Record<keyof ColumnMap, string[]> = {
   year: ['年', 'year', 'yyyy'],
   month: ['月', 'month', 'mm'],
   day: ['日', 'day', 'dd'],
   date: ['日期', 'date', '时间', '发生时间', 'occurred_at'],
   type: ['类型', '支出/收入', '收支', 'type', '收支类型', '收/支'],
-  category: ['类别', '商家', '分类', '类目', 'category', 'merchant', 'store', '店铺'],
+  // 商家 —— 包含老模板里的"类别"（实际填的就是商家名）
+  merchant: ['商家', '类别', 'merchant', 'store', '店铺', '对象', '交易对象'],
+  // 分类 —— 真正的分类名列
+  categoryName: ['分类', '类目', 'category', '归类', '类别名'],
   detail: ['明细', '内容', '描述', '备注', 'detail', 'description', 'note', 'desc'],
   amount: ['金额', '价格', '数额', 'amount', 'price', 'value', '消费'],
   currency: ['单位', '币种', 'currency', 'unit'],
   location: ['地点', '位置', '城市', 'location', 'city', 'place'],
 }
 
+/**
+ * 检测列映射。优先匹配更具体的别名 —— 避免 "类别" 把 "分类" 抢走。
+ *
+ * 策略：
+ * 1. 先精确匹配（s === alias）
+ * 2. 再包含匹配（s.includes(alias)）
+ * 3. 一个表头列只会被分配给一个字段（先到先得）
+ */
 function detectColumns(headers: unknown[]): ColumnMap {
   const map: ColumnMap = {}
-  for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
-    const idx = headers.findIndex((h) => {
-      if (h === null || h === undefined) return false
-      const s = String(h).trim().toLowerCase()
-      return aliases.some(
-        (a) => s === a.toLowerCase() || s.includes(a.toLowerCase()),
+  const used = new Set<number>()
+  const norm = headers.map((h) =>
+    h === null || h === undefined ? '' : String(h).trim().toLowerCase(),
+  )
+
+  // 阶段 1：精确匹配（优先 categoryName，再其他）
+  // 这里的字段顺序很关键：把语义更具体的字段排在前面，让它们先抢列
+  const fields: Array<keyof ColumnMap> = [
+    'categoryName', // 优先：'分类' 应该归到这里，而不是被 merchant 的 '类别' 抢走
+    'merchant',
+    'date',
+    'year',
+    'month',
+    'day',
+    'type',
+    'detail',
+    'amount',
+    'currency',
+    'location',
+  ]
+
+  for (const field of fields) {
+    const aliases = HEADER_ALIASES[field].map((a) => a.toLowerCase())
+    // 精确
+    let idx = norm.findIndex((s, i) => !used.has(i) && s !== '' && aliases.includes(s))
+    // 包含（避开已用列）
+    if (idx < 0) {
+      idx = norm.findIndex(
+        (s, i) => !used.has(i) && s !== '' && aliases.some((a) => s.includes(a)),
       )
-    })
-    if (idx >= 0) (map as Record<string, number>)[field] = idx
+    }
+    if (idx >= 0) {
+      ;(map as Record<string, number>)[field] = idx
+      used.add(idx)
+    }
   }
+
   return map
 }
 
@@ -214,11 +281,16 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
   const baseCurrency = await getBaseCurrency()
   const rates = await getRates()
 
-  // 提前拿分类映射 —— 用于自动归类
+  // 提前拿分类映射 —— 用于按名匹配 + 自动归类
   const cats = await categoryRepo.listAll()
-  const nameToId: Record<string, string> = {}
+  const expenseCatNameToId: Record<string, string> = {} // 关键字分类器用（仅 expense）
+  const allCatNameToId: Record<string, string> = {} // 直接按名匹配用（不限 type，更宽容）
+  const allCatNameToIdLower: Record<string, string> = {} // 同上但小写键
   for (const c of cats) {
-    if (!c.deleted_at && c.kind === 'expense') nameToId[c.name] = c.id
+    if (c.deleted_at) continue
+    if (c.kind === 'expense') expenseCatNameToId[c.name] = c.id
+    allCatNameToId[c.name] = c.id
+    allCatNameToIdLower[c.name.toLowerCase()] = c.id
   }
   // 学习映射(已有交易里 participant→cat 的统计)
   const learnedMap: Record<string, string> = {}
@@ -238,6 +310,12 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
     const top = Object.entries(byName).sort((a, b) => b[1] - a[1])[0]
     if (top && top[1] >= 2) learnedMap[p] = top[0]
   }
+
+  // 统计：让用户看到分类列效果
+  let matchedByName = 0
+  let matchedByClassifier = 0
+  let uncategorized = 0
+  const unmatchedNamesSet = new Set<string>()
 
   dataRows.forEach((r, i) => {
     const lineNo = headerRowIdx + 2 + i
@@ -320,15 +398,45 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
         : ''
     const note = location ? `${detail}${detail ? ' · 在 ' : '在 '}${location}` : detail
 
-    // ── participant = 类别(她的"类别"实际多为商家)─────
+    // ── participant = 商家列 ────────────────
     const participant =
-      columnMap.category !== undefined
-        ? String(r[columnMap.category] ?? '').trim()
+      columnMap.merchant !== undefined
+        ? String(r[columnMap.merchant] ?? '').trim()
         : ''
 
-    // ── 自动归类(仅支出)──────────────────
-    const category_id =
-      type === 'expense' ? classifyOne(participant, note, learnedMap, nameToId) : null
+    // ── 分类 ─────────────────────────────────
+    // 策略：1) 分类列直接按名匹配 → 2) 关键字分类器兜底 → 3) null
+    let category_id: string | null = null
+    let matchedFromName = false
+
+    if (columnMap.categoryName !== undefined) {
+      const rawCatName = String(r[columnMap.categoryName] ?? '').trim()
+      if (rawCatName) {
+        // 精确 → 不区分大小写
+        const direct = allCatNameToId[rawCatName] ?? allCatNameToIdLower[rawCatName.toLowerCase()]
+        if (direct) {
+          category_id = direct
+          matchedFromName = true
+        } else {
+          unmatchedNamesSet.add(rawCatName)
+        }
+      }
+    }
+
+    // 没命中分类列 → 走自动分类器（仅 expense；和 v1 行为一致）
+    if (!matchedFromName && type === 'expense') {
+      const classified = classifyOne(participant, note, learnedMap, expenseCatNameToId)
+      if (classified) {
+        category_id = classified
+        matchedByClassifier++
+      }
+    }
+
+    if (matchedFromName) {
+      matchedByName++
+    } else if (!category_id) {
+      uncategorized++
+    }
 
     transactions.push({
       id: uuid(),
@@ -353,12 +461,26 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
     })
   })
 
+  // 把未匹配的分类名收集到 warnings 里（每个最多说一次，限 10 个）
+  const unmatchedNames = Array.from(unmatchedNamesSet).slice(0, 10)
+  if (unmatchedNames.length > 0) {
+    warnings.push(
+      `分类列里有 ${unmatchedNamesSet.size} 个名字找不到对应分类（已用关键字兜底归类）：${unmatchedNames.join('、')}${unmatchedNamesSet.size > 10 ? ' …' : ''}`,
+    )
+  }
+
   return {
     transactions,
     skippedRows: skipped,
     warnings,
     columnMap,
     headerRow: headerRowIdx + 1,
+    categoryMatchStats: {
+      matchedByName,
+      matchedByClassifier,
+      uncategorized,
+      unmatchedNames,
+    },
   }
 }
 

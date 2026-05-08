@@ -14,7 +14,8 @@ const COLUMN_LABELS: Record<string, string> = {
   day: '日',
   date: '日期(整列)',
   type: '收支类型',
-  category: '类别 / 商家',
+  merchant: '商家 / 对象',
+  categoryName: '分类（按名匹配）',
   detail: '明细',
   amount: '金额',
   currency: '币种',
@@ -107,9 +108,14 @@ export function XlsxImporter() {
       >
         自动识别表头(中英都支持)。支持的列:
         <span className="bn-mono ml-1">年 月 日</span> 或 <span className="bn-mono">日期</span>{' '}
-        · <span className="bn-mono">支出/收入</span> · <span className="bn-mono">类别</span> ·{' '}
-        <span className="bn-mono">明细</span> · <span className="bn-mono">金额</span> ·{' '}
-        <span className="bn-mono">单位</span> · <span className="bn-mono">地点</span>
+        · <span className="bn-mono">支出/收入</span> · <span className="bn-mono">商家</span>{' '}
+        · <span className="bn-mono">分类</span> · <span className="bn-mono">明细</span>{' '}
+        · <span className="bn-mono">金额</span> · <span className="bn-mono">单位</span>{' '}
+        · <span className="bn-mono">地点</span>
+        <br />
+        <span style={{ color: 'var(--bn-text-tertiary)' }}>
+          有「分类」列时按名直接归类（如「食杂」「餐饮」），找不到的回退到自动分类器。
+        </span>
       </p>
 
       <input
@@ -176,6 +182,52 @@ export function XlsxImporter() {
                 }
               />
               <Stat label="支出合计" value={`€ ${totalAmount.toFixed(2)}`} />
+            </div>
+          )}
+
+          {/* 分类匹配统计 —— 让用户能看到「分类」列效果 */}
+          {preview.transactions.length > 0 && preview.categoryMatchStats && (
+            <div
+              className="rounded-xl p-3 text-xs"
+              style={{
+                background: 'var(--bn-glass)',
+                border: '0.5px solid var(--bn-glass-border)',
+              }}
+            >
+              <p
+                className="mb-2 font-medium"
+                style={{ color: 'var(--bn-text-primary)' }}
+              >
+                分类匹配
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                <MiniStat
+                  label="按分类列"
+                  value={preview.categoryMatchStats.matchedByName}
+                  tone={preview.categoryMatchStats.matchedByName > 0 ? 'positive' : 'neutral'}
+                />
+                <MiniStat
+                  label="自动归类"
+                  value={preview.categoryMatchStats.matchedByClassifier}
+                  tone="neutral"
+                />
+                <MiniStat
+                  label="未分类"
+                  value={preview.categoryMatchStats.uncategorized}
+                  tone={preview.categoryMatchStats.uncategorized > 0 ? 'negative' : 'neutral'}
+                />
+              </div>
+              {preview.categoryMatchStats.unmatchedNames.length > 0 && (
+                <p
+                  className="mt-2 leading-relaxed"
+                  style={{ color: 'var(--bn-text-tertiary)' }}
+                >
+                  分类列里这些名字在系统里没找到，已用关键字兜底：
+                  <span className="bn-mono">
+                    {preview.categoryMatchStats.unmatchedNames.join('、')}
+                  </span>
+                </p>
+              )}
             </div>
           )}
 
@@ -335,6 +387,31 @@ function Stat({ label, value }: { label: string; value: string }) {
       >
         {value}
       </p>
+    </div>
+  )
+}
+
+function MiniStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string
+  value: number
+  tone: 'positive' | 'negative' | 'neutral'
+}) {
+  const color =
+    tone === 'positive'
+      ? 'var(--bn-positive)'
+      : tone === 'negative'
+        ? 'var(--bn-negative)'
+        : 'var(--bn-text-primary)'
+  return (
+    <div className="flex items-baseline justify-between">
+      <span style={{ color: 'var(--bn-text-tertiary)' }}>{label}</span>
+      <span className="bn-mono font-medium" style={{ color }}>
+        {value}
+      </span>
     </div>
   )
 }

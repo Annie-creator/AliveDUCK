@@ -10,6 +10,15 @@ import { classifyOne } from '@/lib/classifier'
 
 const CURRENCY_OPTIONS = SUPPORTED_CURRENCIES
 
+/** 把 Date 格式化为 <input type="date"> 需要的 YYYY-MM-DD（本地时区） */
+function todayLocalIso(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${dd}`
+}
+
 export function QuickEntryForm() {
   const [type, setType] = useState<'expense' | 'income'>('expense')
   const [amount, setAmount] = useState('')
@@ -17,6 +26,8 @@ export function QuickEntryForm() {
   const [participant, setParticipant] = useState('')
   const [note, setNote] = useState('')
   const [categoryId, setCategoryId] = useState<string>('')
+  // 发生日期 —— 默认今天，用户可往前选；时间永远跟当前时刻走（保留录入顺序）
+  const [date, setDate] = useState<string>(todayLocalIso)
 
   const categories = useLiveQuery(
     () => db.categories.filter((c) => !c.deleted_at && !c.archived).sortBy('sort_order'),
@@ -39,6 +50,30 @@ export function QuickEntryForm() {
 
   const effectiveCatId = categoryId || suggestedCatId || ''
 
+  const today = todayLocalIso()
+  const isToday = date === today
+  // 友好标签
+  const dateBadgeLabel = useMemo(() => {
+    if (!date) return ''
+    const [y, m, d] = date.split('-').map(Number)
+    if (!y || !m || !d) return date
+    const picked = new Date(y, m - 1, d)
+    const now = new Date()
+    const diffDays = Math.round(
+      (picked.getTime() - new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) /
+        86_400_000,
+    )
+    if (diffDays === 0) return '今天'
+    if (diffDays === -1) return '昨天'
+    if (diffDays === -2) return '前天'
+    if (diffDays < 0 && diffDays >= -6) return `${-diffDays} 天前`
+    // 同年只显示 月/日
+    if (picked.getFullYear() === now.getFullYear()) {
+      return `${picked.getMonth() + 1}月${picked.getDate()}日`
+    }
+    return `${picked.getFullYear()}-${String(picked.getMonth() + 1).padStart(2, '0')}-${String(picked.getDate()).padStart(2, '0')}`
+  }, [date])
+
   async function handleAdd() {
     const n = Number(amount)
     if (!Number.isFinite(n) || n <= 0) return
@@ -47,9 +82,22 @@ export function QuickEntryForm() {
     const rates = await getRates().catch(() => DEFAULT_RATES)
     const exchange_rate = rateToBase(currency, base, rates)
 
+    // 把选中的日期 + 现在的时分秒 拼成 ISO（保证当天多条按录入顺序排）
+    const [y, m, d] = date.split('-').map(Number)
+    const now = new Date()
+    const occurredAt = new Date(
+      y ?? now.getFullYear(),
+      (m ?? now.getMonth() + 1) - 1,
+      d ?? now.getDate(),
+      now.getHours(),
+      now.getMinutes(),
+      now.getSeconds(),
+      now.getMilliseconds(),
+    ).toISOString()
+
     await financeRepo.create({
       type,
-      occurred_at: new Date().toISOString(),
+      occurred_at: occurredAt,
       amount: n,
       currency,
       exchange_rate,
@@ -64,6 +112,7 @@ export function QuickEntryForm() {
     setParticipant('')
     setNote('')
     setCategoryId('')
+    setDate(todayLocalIso()) // 提交后回到今天
   }
 
   return (
@@ -135,6 +184,55 @@ export function QuickEntryForm() {
         onChange={(e) => setNote(e.target.value)}
       />
 
+      {/* 发生日期 —— 默认今天，可往前选 */}
+      <div className="mt-2.5 flex items-center gap-2">
+        <label
+          className="flex flex-1 items-center gap-2 rounded-xl px-3 py-2 text-sm transition-all focus-within:ring-2"
+          style={{
+            background: 'var(--bn-glass)',
+            border: '0.5px solid var(--bn-glass-border)',
+            color: 'var(--bn-text-secondary)',
+          }}
+        >
+          <span style={{ fontSize: 'var(--bn-text-xs)', color: 'var(--bn-text-tertiary)' }}>
+            发生日期
+          </span>
+          <input
+            type="date"
+            value={date}
+            max={today}
+            onChange={(e) => setDate(e.target.value || today)}
+            className="bn-mono flex-1 bg-transparent text-sm outline-none"
+            style={{ color: 'var(--bn-text-primary)' }}
+          />
+          <span
+            className="shrink-0 rounded-full px-2 py-0.5 text-[10.5px]"
+            style={{
+              background: isToday ? 'var(--bn-glass)' : 'var(--bn-glass-strong)',
+              color: isToday ? 'var(--bn-text-tertiary)' : 'var(--bn-text-primary)',
+              border: `0.5px solid ${isToday ? 'var(--bn-glass-border)' : 'var(--bn-accent)'}`,
+              fontWeight: isToday ? 400 : 500,
+            }}
+          >
+            {dateBadgeLabel}
+          </span>
+        </label>
+        {!isToday && (
+          <button
+            type="button"
+            onClick={() => setDate(today)}
+            className="shrink-0 rounded-full px-2.5 py-1 text-[11px] transition-all"
+            style={{
+              background: 'var(--bn-glass)',
+              border: '0.5px solid var(--bn-glass-border)',
+              color: 'var(--bn-text-tertiary)',
+            }}
+          >
+            回到今天
+          </button>
+        )}
+      </div>
+
       {filteredCats.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-1.5">
           {filteredCats.map((c) => {
@@ -166,6 +264,7 @@ export function QuickEntryForm() {
 
       <Button className="mt-3" onClick={handleAdd} disabled={!amount}>
         添加 {type === 'expense' ? '支出' : '收入'}
+        {!isToday && <span className="ml-1 opacity-70">· {dateBadgeLabel}</span>}
       </Button>
     </GlassPanel>
   )
