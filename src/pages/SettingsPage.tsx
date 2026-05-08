@@ -7,6 +7,7 @@ import { DataMaintenanceCard } from '@/components/DataMaintenanceCard'
 import { ExportButton } from '@/components/finance/ExportButton'
 import { CurrencySettings } from '@/components/finance/CurrencySettings'
 import { recomputeAllExchangeRates } from '@/lib/recompute-rates'
+import { useExpenseHighlight, useFontScale, useWelcomeCooldownHours, type FontScale } from '@/lib/preferences'
 import {
   importLegacyJson,
   listLegacyBackups,
@@ -89,16 +90,220 @@ export function SettingsPage() {
 }
 
 function AppearanceTab() {
+  const [expenseHighlight, setExpenseHighlight] = useExpenseHighlight()
+  const [fontScale, setFontScale] = useFontScale()
+  const [welcomeCooldown, setWelcomeCooldown] = useWelcomeCooldownHours()
+
   return (
-    <GlassPanel padding="lg" radius="lg" variant="strong">
-      <h2 className="mb-1 text-base font-medium" style={{ color: 'var(--bn-text-primary)' }}>
-        外观主题
-      </h2>
-      <p className="mb-4 text-xs" style={{ color: 'var(--bn-text-secondary)' }}>
-        选一个心情,随时换。点开"跟随系统"则白天暖桃、夜晚震金自动切换。
-      </p>
-      <ThemeSwitcher />
-    </GlassPanel>
+    <div className="space-y-5">
+      <GlassPanel padding="lg" radius="lg" variant="strong">
+        <h2 className="mb-1 text-base font-medium" style={{ color: 'var(--bn-text-primary)' }}>
+          外观主题
+        </h2>
+        <p className="mb-4 text-xs" style={{ color: 'var(--bn-text-secondary)' }}>
+          选一个心情,随时换。点开"跟随系统"则白天暖桃、夜晚震金自动切换。
+        </p>
+        <ThemeSwitcher />
+      </GlassPanel>
+
+      {/* ── 字体大小 ─────────────────────────────────── */}
+      <GlassPanel padding="lg" radius="lg" variant="default">
+        <div
+          style={{
+            fontSize: 'var(--bn-text-md)',
+            fontWeight: 500,
+            color: 'var(--bn-text-primary)',
+            letterSpacing: '-0.01em',
+          }}
+        >
+          字体大小
+        </div>
+        <p
+          style={{
+            marginTop: 2,
+            fontSize: 'var(--bn-text-sm)',
+            color: 'var(--bn-text-tertiary)',
+            letterSpacing: '-0.005em',
+            lineHeight: 1.5,
+          }}
+        >
+          全局字体档位,影响所有页面的文字、数字和标题。立即生效。
+        </p>
+        <div className="mt-3 flex gap-2">
+          {(['small', 'medium', 'large'] as const).map((scale) => {
+            const active = fontScale === scale
+            const label = scale === 'small' ? '小' : scale === 'medium' ? '默认' : '大'
+            const previewSize = scale === 'small' ? 13 : scale === 'medium' ? 15 : 17
+            return (
+              <button
+                key={scale}
+                type="button"
+                onClick={() => setFontScale(scale)}
+                className="flex-1 rounded-xl px-3 py-3 transition-all"
+                style={{
+                  background: active ? 'var(--bn-glass-strong)' : 'var(--bn-glass)',
+                  border: `0.5px solid ${active ? 'var(--bn-accent)' : 'var(--bn-glass-border)'}`,
+                  color: active ? 'var(--bn-text-primary)' : 'var(--bn-text-secondary)',
+                }}
+              >
+                <div style={{ fontSize: previewSize, fontWeight: 500, lineHeight: 1.2 }}>
+                  Aa
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--bn-text-tertiary)',
+                    marginTop: 4,
+                  }}
+                >
+                  {label}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </GlassPanel>
+
+      {/* ── 欢迎页冷却时间 ──────────────────────────── */}
+      <GlassPanel padding="lg" radius="lg" variant="default">
+        <div
+          style={{
+            fontSize: 'var(--bn-text-md)',
+            fontWeight: 500,
+            color: 'var(--bn-text-primary)',
+            letterSpacing: '-0.01em',
+          }}
+        >
+          启动欢迎页
+        </div>
+        <p
+          style={{
+            marginTop: 2,
+            fontSize: 'var(--bn-text-sm)',
+            color: 'var(--bn-text-tertiary)',
+            letterSpacing: '-0.005em',
+            lineHeight: 1.5,
+          }}
+        >
+          每隔多久看一次"早上好鸭~"的欢迎页。距上次访问超过这个时间才会再弹。
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {([
+            { v: 1, label: '1 小时' },
+            { v: 6, label: '6 小时' },
+            { v: 24, label: '每天一次' },
+            { v: 0, label: '关闭' },
+          ] as const).map(({ v, label }) => {
+            const active = welcomeCooldown === v
+            return (
+              <button
+                key={v}
+                type="button"
+                onClick={() => setWelcomeCooldown(v)}
+                className="rounded-full px-3 py-1.5 transition-all"
+                style={{
+                  fontSize: 'var(--bn-text-sm)',
+                  background: active ? 'var(--bn-glass-strong)' : 'var(--bn-glass)',
+                  color: active ? 'var(--bn-text-primary)' : 'var(--bn-text-secondary)',
+                  border: `0.5px solid ${active ? 'var(--bn-accent)' : 'var(--bn-glass-border)'}`,
+                  fontWeight: active ? 500 : 400,
+                }}
+              >
+                {label}
+              </button>
+            )
+          })}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            try {
+              localStorage.removeItem('banya_welcome_last_seen')
+              window.location.reload()
+            } catch {
+              /* ignore */
+            }
+          }}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-colors hover:bg-white/5"
+          style={{
+            fontSize: 'var(--bn-text-xs)',
+            color: 'var(--bn-text-tertiary)',
+          }}
+        >
+          ↻ 刷新页面立刻重看一次
+        </button>
+      </GlassPanel>
+
+      <GlassPanel padding="lg" radius="lg" variant="default">
+        <label className="flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            checked={expenseHighlight}
+            onChange={(e) => setExpenseHighlight(e.target.checked)}
+            className="mt-0.5 shrink-0"
+            style={{ accentColor: 'var(--bn-negative)' }}
+          />
+          <div className="min-w-0 flex-1">
+            <div
+              style={{
+                fontSize: 'var(--bn-text-md)',
+                fontWeight: 500,
+                color: 'var(--bn-text-primary)',
+                letterSpacing: '-0.01em',
+              }}
+            >
+              一键支出高亮
+            </div>
+            <p
+              style={{
+                marginTop: 2,
+                fontSize: 'var(--bn-text-sm)',
+                color: 'var(--bn-text-tertiary)',
+                letterSpacing: '-0.005em',
+                lineHeight: 1.5,
+              }}
+            >
+              开启后,所有支出金额变红色 — 适合需要警觉花钱的时候。关闭则用主文字色,日常记账更舒服。
+            </p>
+            {/* 实时预览 */}
+            <div
+              className="mt-3 flex items-center gap-3 rounded-lg px-3 py-2"
+              style={{
+                background: 'var(--bn-glass)',
+                border: '0.5px solid var(--bn-glass-border)',
+              }}
+            >
+              <span
+                style={{ fontSize: 'var(--bn-text-sm)', color: 'var(--bn-text-tertiary)' }}
+              >
+                示例:
+              </span>
+              <span
+                className="bn-mono"
+                style={{
+                  fontSize: 'var(--bn-text-md)',
+                  fontWeight: 600,
+                  color: expenseHighlight ? 'var(--bn-negative)' : 'var(--bn-text-primary)',
+                }}
+              >
+                −€ 13.45
+              </span>
+              <span
+                className="bn-mono"
+                style={{
+                  marginLeft: 'auto',
+                  fontSize: 'var(--bn-text-md)',
+                  fontWeight: 600,
+                  color: 'var(--bn-positive)',
+                }}
+              >
+                +€ 1,850.00
+              </span>
+            </div>
+          </div>
+        </label>
+      </GlassPanel>
+    </div>
   )
 }
 

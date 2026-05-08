@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { Pencil, Trash2, Check, X, Play, Pause, Square, SkipForward, PictureInPicture2 } from 'lucide-react'
 import { db } from '@/db'
+import { focusRepo } from '@/repositories'
 import { GlassPanel } from '@/components/ui/GlassPanel'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -14,12 +16,13 @@ import {
   AMBIENT_SOUNDS,
   LEGACY_BILIBILI_BGM,
   ambientPlayer,
+  normalizeAmbientKey,
   playChime,
 } from '@/lib/ambient-sound'
-import { closePip, isPipOpen, isPipSupported, openPip, sendPipUpdate } from '@/lib/pip-window'
+import { closePip, isPipOpen, isPipSupported, openPip } from '@/lib/pip-window'
 import { ensureNotificationPermission } from '@/lib/notifications'
 import { resolveTimeRange } from '@/lib/finance-stats'
-import type { Habit } from '@/types'
+import type { FocusSession, Habit } from '@/types'
 
 export function PomodoroPanel() {
   const [state, setState] = useState<PomodoroState>(pomodoroEngine.getState())
@@ -37,27 +40,29 @@ export function PomodoroPanel() {
     return () => window.removeEventListener('bn:pomodoro:chime', handler)
   }, [])
 
-  // PiP 更新
-  useEffect(() => {
-    if (pipOpen) {
-      sendPipUpdate({
-        remainingMs: state.remainingMs,
-        totalMs: state.totalMs,
-        mode: state.mode,
-        status: state.status,
-        taskName: state.taskName,
-      })
-    }
-  }, [state, pipOpen])
+  // PiP 更新已经移到 pomodoro-engine 的 notify() 里,
+  // 由引擎单例直接推送,不再依赖 React 组件挂载状态。
+  // 用户切到别的页面时 PomodoroPanel unmount 不影响 PiP 同步。
 
   // 状态切换时联动环境音
+  // 拆成两个 effect：
+  //   1) status 变化时控制 stop / pause / resume
+  //   2) 仅在运行中且配置变化时才主动 setSound
+  // 这样配置面板里的"点选项立即试听"不会被 effect 强制停掉
   useEffect(() => {
-    if (state.status === 'running' && config.ambientSound !== 'none') {
-      ambientPlayer.setSound(config.ambientSound, config.ambientVolume)
-    } else if (state.status === 'paused') {
+    if (state.status === 'paused') {
       ambientPlayer.pause()
     } else if (state.status === 'idle') {
       ambientPlayer.stop()
+    }
+  }, [state.status])
+
+  useEffect(() => {
+    if (state.status !== 'running') return
+    if (config.ambientSound === 'none') {
+      ambientPlayer.stop()
+    } else {
+      ambientPlayer.setSound(config.ambientSound, config.ambientVolume)
     }
   }, [state.status, config.ambientSound, config.ambientVolume])
 
@@ -220,47 +225,103 @@ export function PomodoroPanel() {
       {/* 大数字显示 */}
       <GlassPanel padding="lg" radius="lg" variant="strong">
         <div className="text-center">
-          <p className="mb-2 text-[11px] uppercase tracking-[0.15em]"
-            style={{ color: modeColor, fontWeight: 500 }}>
+          <p className="mb-3 text-[11px] uppercase tracking-[0.2em]"
+            style={{ color: modeColor, fontWeight: 600 }}>
             {modeLabel} · 第 {state.focusCountInCycle + (state.mode === 'focus' ? 1 : 0)} 个
           </p>
+
+          {/* 大数字 — Phase C: 字重 600, 微大点字号, 运行中带脉冲光晕 */}
           <div
-            className="bn-mono mb-3 text-[80px] leading-none"
+            className={state.status === 'running' ? 'bn-timer-pulse' : ''}
             style={{
-              color: 'var(--bn-text-primary)',
-              fontWeight: 300,
-              letterSpacing: '-0.04em',
+              fontFamily: 'var(--bn-font-mono)',
+              fontSize: 'clamp(72px, 14vw, 96px)',
+              fontWeight: 600,
               fontVariantNumeric: 'tabular-nums',
+              letterSpacing: '-0.04em',
+              color: 'var(--bn-text-primary)',
+              lineHeight: 1,
+              marginBottom: 18,
+              fontFeatureSettings: '"tnum" 1, "ss01" 1',
             }}
           >
             {minutes}:{String(seconds).padStart(2, '0')}
           </div>
 
-          {/* 进度条 */}
-          <div className="mx-auto mb-4 h-1 w-3/4 overflow-hidden rounded-full"
-            style={{ background: 'var(--bn-glass)' }}>
-            <div
-              className="h-full rounded-full transition-all"
-              style={{
-                width: `${progress * 100}%`,
-                background: modeColor,
-              }}
-            />
-          </div>
+          {/* 进度条 — Phase C: 改为 5+5 圆点分组 */}
+          <DotProgress progress={progress} color={modeColor} />
 
-          {/* 控制 */}
-          <div className="flex items-center justify-center gap-2">
-            <Button onClick={handleStartOrPause} size="lg">
-              {state.status === 'running' ? '暂停' : state.status === 'paused' ? '继续' : '开始'}
-            </Button>
+          {/* 本次时长快速调整(仅在 focus 模式 + idle 时显示) */}
+          {state.mode === 'focus' && state.status === 'idle' && (
+            <FocusDurationChips
+              configDefault={config.focusMinutes}
+              currentOverride={state.focusOverrideMinutes}
+            />
+          )}
+
+          {/* 控制按钮 — Phase C: 主按钮做成大圆形 icon */}
+          <div className="flex items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={handleStartOrPause}
+              aria-label={state.status === 'running' ? '暂停' : '开始'}
+              className="flex h-14 w-14 items-center justify-center rounded-full transition-all hover:scale-105 active:scale-95"
+              style={{
+                background: 'var(--bn-button-bg)',
+                color: 'var(--bn-button-fg)',
+                boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+              }}
+            >
+              {state.status === 'running' ? (
+                <Pause size={22} strokeWidth={2.4} fill="currentColor" />
+              ) : (
+                <Play size={22} strokeWidth={2.4} fill="currentColor" style={{ marginLeft: 2 }} />
+              )}
+            </button>
             {state.status !== 'idle' && (
-              <Button variant="glass" onClick={handleStop}>停止</Button>
+              <button
+                type="button"
+                onClick={handleStop}
+                aria-label="停止"
+                className="flex h-11 w-11 items-center justify-center rounded-full transition-all hover:scale-105 active:scale-95"
+                style={{
+                  background: 'var(--bn-glass-strong)',
+                  color: 'var(--bn-text-primary)',
+                  border: '0.5px solid var(--bn-glass-border)',
+                }}
+              >
+                <Square size={16} strokeWidth={2.4} fill="currentColor" />
+              </button>
             )}
-            <Button variant="ghost" size="sm" onClick={handleSkip}>跳过</Button>
+            <button
+              type="button"
+              onClick={handleSkip}
+              aria-label="跳过"
+              className="flex h-11 w-11 items-center justify-center rounded-full transition-all hover:scale-105 active:scale-95"
+              style={{
+                background: 'var(--bn-glass)',
+                color: 'var(--bn-text-secondary)',
+                border: '0.5px solid var(--bn-glass-border)',
+              }}
+              title="跳过当前阶段"
+            >
+              <SkipForward size={15} strokeWidth={2} />
+            </button>
             {isPipSupported() && (
-              <Button variant="ghost" size="sm" onClick={togglePip}>
-                {pipOpen ? '关闭浮窗' : '↗ 弹出浮窗'}
-              </Button>
+              <button
+                type="button"
+                onClick={togglePip}
+                aria-label={pipOpen ? '关闭浮窗' : '弹出浮窗'}
+                className="flex h-11 w-11 items-center justify-center rounded-full transition-all hover:scale-105 active:scale-95"
+                style={{
+                  background: pipOpen ? 'var(--bn-glass-strong)' : 'var(--bn-glass)',
+                  color: pipOpen ? 'var(--bn-accent)' : 'var(--bn-text-secondary)',
+                  border: `0.5px solid ${pipOpen ? 'var(--bn-accent)' : 'var(--bn-glass-border)'}`,
+                }}
+                title={pipOpen ? '关闭画中画浮窗' : '弹出画中画浮窗'}
+              >
+                <PictureInPicture2 size={15} strokeWidth={2} />
+              </button>
             )}
           </div>
         </div>
@@ -281,27 +342,9 @@ export function PomodoroPanel() {
             还没开始今天的第一个番茄
           </p>
         ) : (
-          <div className="mt-2 space-y-1">
+          <div className="mt-2 space-y-0.5">
             {(todaySessions ?? []).slice(0, 5).map((s) => (
-              <div
-                key={s.id}
-                className="flex items-center gap-2 text-xs"
-                style={{ color: 'var(--bn-text-secondary)' }}
-              >
-                <span className="bn-mono w-12 shrink-0"
-                  style={{ color: 'var(--bn-text-tertiary)' }}>
-                  {new Date(s.started_at).toLocaleTimeString('zh-CN', {
-                    hour: '2-digit', minute: '2-digit',
-                  })}
-                </span>
-                <span className="flex-1 truncate">
-                  {s.note || '(未命名任务)'}
-                </span>
-                <span className="bn-mono shrink-0"
-                  style={{ color: 'var(--bn-text-tertiary)' }}>
-                  {Math.round(s.duration_seconds / 60)} 分
-                </span>
-              </div>
+              <SessionRow key={s.id} session={s} />
             ))}
           </div>
         )}
@@ -318,7 +361,11 @@ export function PomodoroPanel() {
       </button>
 
       {showConfig && (
-        <PomodoroConfigPanel config={config} onChange={updateConfig} />
+        <PomodoroConfigPanel
+          config={config}
+          onChange={updateConfig}
+          isRunning={state.status === 'running'}
+        />
       )}
     </div>
   )
@@ -327,9 +374,11 @@ export function PomodoroPanel() {
 function PomodoroConfigPanel({
   config,
   onChange,
+  isRunning,
 }: {
   config: PomodoroConfig
   onChange: (patch: Partial<PomodoroConfig>) => void
+  isRunning: boolean
 }) {
   const [customBvid, setCustomBvid] = useState('')
 
@@ -381,24 +430,48 @@ function PomodoroConfigPanel({
       {/* 环境音 */}
       <p className="mb-2 mt-4 text-[11px] uppercase tracking-wider"
         style={{ color: 'var(--bn-text-tertiary)' }}>
-        环境音
+        环境音 <span style={{ textTransform: 'none', letterSpacing: 0, marginLeft: 6, opacity: 0.7 }}>· 点选项即可试听</span>
       </p>
-      <div className="flex flex-wrap gap-1.5">
+      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
         {AMBIENT_SOUNDS.map((s) => {
-          const active = config.ambientSound === s.key
+          const active = normalizeAmbientKey(config.ambientSound) === s.key
           return (
             <button
               key={s.key}
               type="button"
-              onClick={() => onChange({ ambientSound: s.key })}
-              className="rounded-full px-2.5 py-1 text-[11px] transition-all"
+              onClick={() => {
+                onChange({ ambientSound: s.key })
+                // 点了立即试听 3 秒(番茄钟未启动时也能听到反馈)
+                if (!isRunning) {
+                  if (s.key === 'none') {
+                    ambientPlayer.stop()
+                  } else {
+                    ambientPlayer.preview(s.key, config.ambientVolume, 3000)
+                  }
+                }
+              }}
+              className="flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-left transition-all"
               style={{
                 background: active ? 'var(--bn-glass-strong)' : 'var(--bn-glass)',
-                color: active ? 'var(--bn-text-primary)' : 'var(--bn-text-tertiary)',
+                color: active ? 'var(--bn-text-primary)' : 'var(--bn-text-secondary)',
                 border: `0.5px solid ${active ? 'var(--bn-accent)' : 'var(--bn-glass-border)'}`,
               }}
             >
-              {s.name}
+              <span style={{ fontSize: 16, lineHeight: 1 }} aria-hidden>{s.emoji}</span>
+              <div className="min-w-0 flex-1">
+                <div style={{ fontSize: 12, fontWeight: 500, letterSpacing: '-0.005em' }}>{s.name}</div>
+                <div
+                  className="truncate"
+                  style={{
+                    fontSize: 10,
+                    color: 'var(--bn-text-tertiary)',
+                    marginTop: 1,
+                    letterSpacing: '-0.005em',
+                  }}
+                >
+                  {s.hint}
+                </div>
+              </div>
             </button>
           )
         })}
@@ -470,6 +543,411 @@ function PomodoroConfigPanel({
         )}
       </div>
     </GlassPanel>
+  )
+}
+
+/**
+ * 圆点进度条 — Phase C 设计:5+5 圆点分组,中间略宽间距,
+ * 比线条更有"番茄分段"语义。
+ *
+ * 实现：10 个圆点,progress * 10 决定亮起的个数;
+ * 当前正在进行的那一颗用半透明亮色,做出"正在填充"的感觉。
+ */
+function DotProgress({ progress, color }: { progress: number; color: string }) {
+  const total = 10
+  const filledFloat = Math.max(0, Math.min(total, progress * total))
+  const filledFull = Math.floor(filledFloat)
+  const partialFraction = filledFloat - filledFull // 当前那一颗的填充比例
+
+  return (
+    <div className="mb-5 flex items-center justify-center" style={{ gap: 6 }}>
+      {Array.from({ length: total }).map((_, i) => {
+        const isFull = i < filledFull
+        const isCurrent = i === filledFull && partialFraction > 0
+        // 5+5 分组:第 5 个之后多 6px 间距
+        const extraMarginLeft = i === 5 ? 8 : 0
+
+        return (
+          <span
+            key={i}
+            style={{
+              marginLeft: extraMarginLeft,
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              background: isFull
+                ? color
+                : isCurrent
+                  ? `color-mix(in srgb, ${color} ${30 + partialFraction * 60}%, transparent)`
+                  : 'var(--bn-glass)',
+              border: isFull || isCurrent ? 'none' : '0.5px solid var(--bn-glass-border)',
+              transition: 'background 0.4s ease',
+              flexShrink: 0,
+            }}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * 单条 focus session 行。支持就地编辑任务名 + 软删除。
+ *
+ * 视觉契约：
+ *   时间(12px mono) | 任务名(13px,可编辑) | 时长(12px mono) | 操作(hover 出现)
+ */
+function SessionRow({ session }: { session: FocusSession }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(session.note || '')
+  const [removing, setRemoving] = useState(false)
+
+  async function save() {
+    const next = draft.trim()
+    if (next !== (session.note || '')) {
+      try {
+        await focusRepo.update(session.id, { note: next })
+      } catch {
+        // ignore — useLiveQuery 会重新拉数据,失败时回滚到原值
+      }
+    }
+    setEditing(false)
+  }
+
+  function cancel() {
+    setDraft(session.note || '')
+    setEditing(false)
+  }
+
+  async function handleDelete() {
+    setRemoving(true)
+    setTimeout(() => {
+      void focusRepo.softDelete(session.id)
+    }, 180)
+  }
+
+  return (
+    <div
+      className="group flex items-center gap-2 rounded-md px-1.5 py-1 text-xs transition-all"
+      style={{
+        color: 'var(--bn-text-secondary)',
+        opacity: removing ? 0 : 1,
+        transform: removing ? 'translateX(-12px)' : 'translateX(0)',
+      }}
+    >
+      <span
+        className="bn-mono w-12 shrink-0"
+        style={{ color: 'var(--bn-text-tertiary)', fontSize: 11 }}
+      >
+        {new Date(session.started_at).toLocaleTimeString('zh-CN', {
+          hour: '2-digit',
+          minute: '2-digit',
+        })}
+      </span>
+
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void save()
+            if (e.key === 'Escape') cancel()
+          }}
+          onBlur={() => void save()}
+          className="flex-1 rounded-md px-1.5 py-0.5"
+          style={{
+            background: 'var(--bn-glass-strong)',
+            color: 'var(--bn-text-primary)',
+            border: '0.5px solid var(--bn-accent)',
+            fontSize: 12,
+            outline: 'none',
+            letterSpacing: '-0.005em',
+          }}
+        />
+      ) : (
+        <span
+          className="flex-1 cursor-text truncate"
+          onClick={() => setEditing(true)}
+          title="点击重命名"
+          style={{
+            color: session.note ? 'var(--bn-text-secondary)' : 'var(--bn-text-tertiary)',
+            fontStyle: session.note ? 'normal' : 'italic',
+          }}
+        >
+          {session.note || '(未命名任务)'}
+        </span>
+      )}
+
+      <span
+        className="bn-mono shrink-0"
+        style={{ color: 'var(--bn-text-tertiary)', fontSize: 11 }}
+      >
+        {Math.round(session.duration_seconds / 60)} 分
+      </span>
+
+      {/* 操作按钮 — 桌面端 hover 出现, 移动端常显 */}
+      {!editing && (
+        <div className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover:opacity-100">
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            aria-label="重命名"
+            className="rounded p-1 hover:bg-white/10"
+            style={{ color: 'var(--bn-text-tertiary)' }}
+          >
+            <Pencil size={11} strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleDelete()}
+            aria-label="删除"
+            className="rounded p-1 hover:bg-white/10"
+            style={{ color: 'var(--bn-text-tertiary)' }}
+          >
+            <Trash2 size={11} strokeWidth={1.8} />
+          </button>
+        </div>
+      )}
+      {editing && (
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              // mouseDown 而不是 onClick:避免 input onBlur 先于 click 触发导致丢交互
+              e.preventDefault()
+              void save()
+            }}
+            aria-label="保存"
+            className="rounded p-1 hover:bg-white/10"
+            style={{ color: 'var(--bn-positive)' }}
+          >
+            <Check size={11} strokeWidth={2.4} />
+          </button>
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              cancel()
+            }}
+            aria-label="取消"
+            className="rounded p-1 hover:bg-white/10"
+            style={{ color: 'var(--bn-text-tertiary)' }}
+          >
+            <X size={11} strokeWidth={2.4} />
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 本次专注时长快速选择器。
+ *
+ * 出现在主面板大数字下方,仅在 idle + focus 模式显示。
+ * 设计契约：
+ *   - 不修改全局配置 config.focusMinutes
+ *   - 只调用 pomodoroEngine.setFocusOverride(minutes | null)
+ *   - "默认"档位高亮（来自 configDefault）
+ *   - 当前 override 与"默认"不同时,显示对应档位激活态
+ *   - "自定义" → prompt 输入数字（简洁优先;如需更精致后续可换成 popover）
+ */
+function FocusDurationChips({
+  configDefault,
+  currentOverride,
+}: {
+  configDefault: number
+  currentOverride: number | null
+}) {
+  // 候选档位:确保包含用户的默认值
+  const baseOptions = [10, 15, 25, 45, 60, 90]
+  const options = baseOptions.includes(configDefault)
+    ? baseOptions
+    : [...baseOptions, configDefault].sort((a, b) => a - b)
+  const effective = currentOverride ?? configDefault
+
+  function handlePick(minutes: number) {
+    if (minutes === configDefault) {
+      // 选了默认值 → 清掉 override
+      pomodoroEngine.setFocusOverride(null)
+    } else {
+      pomodoroEngine.setFocusOverride(minutes)
+    }
+  }
+
+  function handleCustom() {
+    // eslint-disable-next-line no-alert
+    const raw = window.prompt('本次专注多少分钟?(1-240)', String(effective))
+    if (!raw) return
+    const n = Math.floor(Number(raw))
+    if (!Number.isFinite(n) || n < 1 || n > 240) return
+    if (n === configDefault) {
+      pomodoroEngine.setFocusOverride(null)
+    } else {
+      pomodoroEngine.setFocusOverride(n)
+    }
+  }
+
+  return (
+    <div className="mb-4">
+      <p
+        className="mb-1.5 uppercase"
+        style={{
+          fontSize: 'var(--bn-text-xs)',
+          color: 'var(--bn-text-tertiary)',
+          letterSpacing: '0.08em',
+          fontWeight: 500,
+        }}
+      >
+        本次时长 <span
+          style={{
+            textTransform: 'none',
+            letterSpacing: 0,
+            marginLeft: 6,
+            opacity: 0.7,
+          }}
+        >
+          · 仅本次有效,启动后自动回到默认 {configDefault} 分钟
+        </span>
+      </p>
+
+      {/* ± stepper（每按一次 ±5 分钟,1-240 范围）*/}
+      <div className="mb-2 flex items-center justify-center gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            const next = Math.max(1, effective - 5)
+            if (next === configDefault) {
+              pomodoroEngine.setFocusOverride(null)
+            } else {
+              pomodoroEngine.setFocusOverride(next)
+            }
+          }}
+          aria-label="减 5 分钟"
+          disabled={effective <= 1}
+          className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:scale-105 active:scale-95 disabled:opacity-30"
+          style={{
+            background: 'var(--bn-glass-strong)',
+            border: '0.5px solid var(--bn-glass-border)',
+            color: 'var(--bn-text-primary)',
+            fontWeight: 700,
+          }}
+        >
+          −
+        </button>
+        <span
+          className="bn-mono"
+          style={{
+            fontSize: 18,
+            fontWeight: 700,
+            fontVariantNumeric: 'tabular-nums',
+            color: 'var(--bn-text-primary)',
+            letterSpacing: '-0.02em',
+            minWidth: 80,
+            textAlign: 'center',
+          }}
+        >
+          {effective}{' '}
+          <span
+            style={{
+              fontSize: 12,
+              color: 'var(--bn-text-tertiary)',
+              fontWeight: 400,
+              letterSpacing: 0,
+            }}
+          >
+            分钟
+          </span>
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            const next = Math.min(240, effective + 5)
+            if (next === configDefault) {
+              pomodoroEngine.setFocusOverride(null)
+            } else {
+              pomodoroEngine.setFocusOverride(next)
+            }
+          }}
+          aria-label="加 5 分钟"
+          disabled={effective >= 240}
+          className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:scale-105 active:scale-95 disabled:opacity-30"
+          style={{
+            background: 'var(--bn-accent)',
+            color: 'var(--bn-button-fg)',
+            border: 'none',
+            fontWeight: 700,
+          }}
+        >
+          +
+        </button>
+        {currentOverride !== null && (
+          <button
+            type="button"
+            onClick={() => pomodoroEngine.setFocusOverride(null)}
+            className="ml-1 rounded-full px-2 py-1 transition-colors hover:bg-white/5"
+            style={{
+              fontSize: 'var(--bn-text-xs)',
+              color: 'var(--bn-text-tertiary)',
+            }}
+            title="恢复默认 25 分钟"
+          >
+            ↺ 默认
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center justify-center gap-1.5">
+        {options.map((m) => {
+          const active = effective === m
+          const isDefault = m === configDefault
+          return (
+            <button
+              key={m}
+              type="button"
+              onClick={() => handlePick(m)}
+              className="bn-mono rounded-full px-3 py-1 transition-all"
+              style={{
+                fontSize: 'var(--bn-text-sm)',
+                background: active ? 'var(--bn-glass-strong)' : 'var(--bn-glass)',
+                color: active ? 'var(--bn-text-primary)' : 'var(--bn-text-secondary)',
+                border: `0.5px solid ${active ? 'var(--bn-accent)' : 'var(--bn-glass-border)'}`,
+                fontWeight: 600,
+              }}
+              title={isDefault ? '默认' : `临时覆盖为 ${m} 分钟`}
+            >
+              {m}
+              {isDefault && (
+                <span
+                  style={{
+                    fontSize: 9,
+                    marginLeft: 2,
+                    opacity: 0.6,
+                    fontWeight: 400,
+                  }}
+                >
+                  默
+                </span>
+              )}
+            </button>
+          )
+        })}
+        <button
+          type="button"
+          onClick={handleCustom}
+          className="rounded-full px-3 py-1 transition-all"
+          style={{
+            fontSize: 'var(--bn-text-sm)',
+            background: 'var(--bn-glass)',
+            color: 'var(--bn-text-tertiary)',
+            border: '0.5px dashed var(--bn-glass-border)',
+          }}
+        >
+          自定义…
+        </button>
+      </div>
+    </div>
   )
 }
 

@@ -1,7 +1,9 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db'
 import { GlassPanel } from '@/components/ui/GlassPanel'
-import { HabitCard, HabitCreator } from '@/components/habits/HabitCard'
+import { HabitCreator } from '@/components/habits/HabitCard'
+import { UnifiedHabitCalendar } from '@/components/habits/UnifiedHabitCalendar'
+import { TodayCheckInList } from '@/components/habits/TodayCheckInList'
 
 export function HabitsPage() {
   const habits = useLiveQuery(
@@ -14,16 +16,22 @@ export function HabitsPage() {
     <div className="space-y-5">
       <div>
         <p
-          className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.06em]"
-          style={{ color: 'var(--bn-text-secondary)' }}
+          className="mb-1.5 uppercase"
+          style={{
+            fontSize: 'var(--bn-text-xs)',
+            fontWeight: 500,
+            color: 'var(--bn-text-secondary)',
+            letterSpacing: '0.08em',
+          }}
         >
           HABITS
         </p>
         <h1
-          className="text-[30px] leading-[1.15]"
+          className="leading-[1.15]"
           style={{
+            fontSize: 'var(--bn-text-3xl)',
             color: 'var(--bn-text-primary)',
-            fontWeight: 500,
+            fontWeight: 600,
             letterSpacing: '-0.03em',
           }}
         >
@@ -32,11 +40,12 @@ export function HabitsPage() {
             className="ml-2"
             style={{
               color: 'var(--bn-text-tertiary)',
-              fontWeight: 300,
-              letterSpacing: '-0.02em',
+              fontWeight: 400,
+              fontSize: 'var(--bn-text-lg)',
+              letterSpacing: '-0.015em',
             }}
           >
-            一天一格,慢慢长
+            一格一天,慢慢长
           </span>
         </h1>
       </div>
@@ -45,16 +54,21 @@ export function HabitsPage() {
 
       {(habits ?? []).length === 0 ? (
         <GlassPanel padding="lg" radius="lg">
-          <p className="py-6 text-center text-sm" style={{ color: 'var(--bn-text-tertiary)' }}>
+          <p
+            className="py-6 text-center"
+            style={{ fontSize: 'var(--bn-text-sm)', color: 'var(--bn-text-tertiary)' }}
+          >
             还没有习惯,点上面"新建习惯"开始追踪。
           </p>
         </GlassPanel>
       ) : (
-        <div className="space-y-3">
-          {(habits ?? []).map((h) => (
-            <HabitCard key={h.id} habit={h} />
-          ))}
-        </div>
+        <>
+          {/* 顶层:统一月历 — 所有习惯一格 1 天显示完成的 emoji */}
+          <UnifiedHabitCalendar habits={habits ?? []} />
+
+          {/* 下层:紧凑今日打卡列表 — 每习惯一行,emoji + +/- + streak */}
+          <TodayCheckInList habits={habits ?? []} />
+        </>
       )}
     </div>
   )

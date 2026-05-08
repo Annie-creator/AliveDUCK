@@ -64,6 +64,11 @@ export interface Journal extends SyncableEntity {
 }
 
 // ─── 食谱 + 食谱成分 ──────────────────────────────────────────────────
+
+/** 餐次类别 — 一道菜可属于多个餐次（如三明治可早可午） */
+export type MealType = '早饭' | '午饭' | '晚饭' | '夜宵' | '零食' | '饮品'
+export const MEAL_TYPES: MealType[] = ['早饭', '午饭', '晚饭', '夜宵', '零食', '饮品']
+
 export interface Recipe extends SyncableEntity {
   name: string
   description: string
@@ -72,6 +77,10 @@ export interface Recipe extends SyncableEntity {
   instructions: string
   cover_image_url: string | null
   tag_ids: string[]
+  /** 适合的餐次（Phase D-2 新增,可多选） */
+  meal_types: MealType[]
+  /** 大致烹饪时长(分钟,Phase D-2 新增) */
+  duration_minutes: number
 }
 
 export interface RecipeItem extends SyncableEntity {

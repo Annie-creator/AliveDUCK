@@ -61,6 +61,48 @@ const TABLES: ReadonlyArray<{ name: string; table: Table<SyncableEntity, string>
   },
 ]
 
+/**
+ * 推送前的字段清洗器 —— 防止本地 schema 比云端新时把整个同步弄挂。
+ *
+ * 用法：每次本地加新字段 + 老 Supabase 表还没加列时,在这里登记一个剥字段函数。
+ * 等用户在 Supabase SQL 编辑器里加了相应列,就把对应条目移除,新字段就开始同步上去。
+ *
+ * 当前已知 schema 漂移：
+ *   - recipes.meal_types       (Phase D-2 加,云端默认没有)
+ *   - recipes.duration_minutes (同上)
+ *
+ * 用户在 Supabase 加列的 SQL（以后想云同步这俩字段时执行）：
+ *   ALTER TABLE recipes ADD COLUMN meal_types text[] DEFAULT '{}';
+ *   ALTER TABLE recipes ADD COLUMN duration_minutes int DEFAULT 30;
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const PRE_PUSH_CLEANERS: Record<string, (row: any) => any> = {
+  recipes: (row) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { meal_types: _a, duration_minutes: _b, ...rest } = row
+    return rest
+  },
+}
+
+/**
+ * Pull 端的字段保护：当云端 row 拿回来要写入本地时,如果云端 schema 里
+ * 没有的字段就用本地值兜底,而不是直接被 cloud 的 undefined 覆盖。
+ *
+ * 没这个 merger 的话:
+ *   - 用户在本地建了一道菜 "番茄炒蛋",填了 meal_types=['早饭','午饭'], 30 分钟
+ *   - 推上云(经 cleaner 剥字段后,云只存 name/description 等)
+ *   - 下次 pull 把云上 row 拉回 → bulkPut 整 row 覆盖 → 本地 meal_types 变 undefined
+ *   - 用户打开菜单页发现餐次/时长全没了
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const PRE_APPLY_MERGERS: Record<string, (remote: any, local: any | undefined) => any> = {
+  recipes: (remote, local) => ({
+    ...remote,
+    meal_types: local?.meal_types ?? remote.meal_types ?? [],
+    duration_minutes: local?.duration_minutes ?? remote.duration_minutes ?? 30,
+  }),
+}
+
 const PUSH_DEBOUNCE_MS = 800
 const PUSH_BATCH_SIZE = 50
 const PULL_FALLBACK_INTERVAL_MS = 5 * 60 * 1000 // 5 分钟兜底
@@ -224,10 +266,15 @@ class SyncEngine {
           // 剥掉纯本地的 sync_status 字段 —— 云端 schema 里没这一列。
           // sync_status 是"对当前设备而言这行是否已推送"的本地视角,
           // 不应该跨设备共享。
+          //
+          // 同时剥掉云端 schema 暂时不认识的本地新字段(防止 schema drift 把
+          // 整个同步弄挂)。Phase D-2 给 Recipe 加了 meal_types/duration_minutes,
+          // 但 Supabase 那边表结构还没加这俩列, 推上去会 PGRST204 报错。
           const stripped = chunk.map((row) => {
             // eslint-disable-next-line @typescript-eslint/no-unused-vars
             const { sync_status: _drop, ...rest } = row
-            return rest
+            const cleaner = PRE_PUSH_CLEANERS[name]
+            return cleaner ? cleaner(rest) : rest
           })
 
           const { error } = await supabase
@@ -318,16 +365,19 @@ class SyncEngine {
         const toApply: SyncableEntity[] = []
         for (const remote of data as SyncableEntity[]) {
           const local = await table.get(remote.id)
+          const merger = PRE_APPLY_MERGERS[name]
 
           if (!local) {
-            // 本地没有,直接装
-            toApply.push({ ...remote, sync_status: 'synced' })
+            // 本地没有,直接装(必要时用 merger 补缺失字段的默认值)
+            const merged = merger ? merger(remote, undefined) : remote
+            toApply.push({ ...merged, sync_status: 'synced' })
           } else if (local.device_id === myDeviceId && local.sync_status === 'synced') {
             // 自己刚推上去的回弹,跳过
             continue
           } else if (remote.updated_at > local.updated_at) {
-            // 远端更新 → LWW 覆盖
-            toApply.push({ ...remote, sync_status: 'synced' })
+            // 远端更新 → LWW 覆盖,但 merger 保护本地特有字段不被冲掉
+            const merged = merger ? merger(remote, local) : remote
+            toApply.push({ ...merged, sync_status: 'synced' })
           }
           // else 本地更新或一致 → 不动
         }

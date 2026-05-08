@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db'
 import { pantryRepo } from '@/repositories'
@@ -198,26 +198,45 @@ function PantryEditor({ item, onClose }: { item: PantryItem | null; onClose: () 
 
         <div className="mt-2 grid grid-cols-3 gap-2">
           <NumIn label="数量" value={quantity} onChange={setQuantity} step={0.5} />
-          <div>
-            <p className="mb-0.5 text-[10px]" style={{ color: 'var(--bn-text-tertiary)' }}>单位</p>
-            <Input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="g / 个" />
+          <div className="col-span-2">
+            <p className="mb-0.5 text-[10px]" style={{ color: 'var(--bn-text-tertiary)' }}>
+              单位 <span style={{ opacity: 0.7 }}>· 点 chip 填充,也可自由输入</span>
+            </p>
+            <div className="flex gap-1">
+              <Input
+                value={unit}
+                onChange={(e) => setUnit(e.target.value)}
+                placeholder="g / 个 / 盒"
+                className="flex-1"
+              />
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {['个', '盒', 'g', 'kg', 'ml', 'L', '瓶', '包', '袋', '勺', '杯'].map((u) => (
+                <button
+                  key={u}
+                  type="button"
+                  onClick={() => setUnit(u)}
+                  className="rounded-full px-2 py-0.5 transition-all"
+                  style={{
+                    fontSize: 10,
+                    background: unit === u ? 'var(--bn-glass-strong)' : 'var(--bn-glass)',
+                    color: unit === u ? 'var(--bn-text-primary)' : 'var(--bn-text-tertiary)',
+                    border: `0.5px solid ${unit === u ? 'var(--bn-accent)' : 'var(--bn-glass-border)'}`,
+                  }}
+                >
+                  {u}
+                </button>
+              ))}
+            </div>
           </div>
+        </div>
+        <div className="mt-2">
           <NumIn label="低库存阈值" value={lowThreshold} onChange={setLowThreshold} step={0.5} />
         </div>
 
         <div className="mt-2">
           <p className="mb-0.5 text-[10px]" style={{ color: 'var(--bn-text-tertiary)' }}>过期日期(可选)</p>
-          <input
-            type="date"
-            value={expires}
-            onChange={(e) => setExpires(e.target.value)}
-            className="rounded-lg px-2.5 py-1.5 text-sm"
-            style={{
-              background: 'var(--bn-glass)',
-              border: '0.5px solid var(--bn-glass-border)',
-              color: 'var(--bn-text-primary)',
-            }}
-          />
+          <DatePickerField value={expires} onChange={setExpires} />
         </div>
 
         <Input className="mt-2" placeholder="备注" value={note} onChange={(e) => setNote(e.target.value)} />
@@ -252,6 +271,96 @@ function NumIn({ label, value, onChange, step = 1 }: { label: string; value: num
           border: '0.5px solid var(--bn-glass-border)',
           color: 'var(--bn-text-primary)',
         }}
+      />
+    </div>
+  )
+}
+
+/**
+ * 鲁棒的日期选择器 —— 解决 native date input 在 iOS Safari + Chrome 移动端
+ * 经常点不开 picker 的问题。
+ *
+ * 实现：可见的 button 触发,隐藏的 input 提供 picker UI 和值。
+ *  - button 永远是可点击的(没有 native input 的怪行为)
+ *  - 点 button → 调 input.showPicker() → 浏览器原生 picker 弹出
+ *  - showPicker 不支持时 → 让 input 可见作为后备
+ */
+function DatePickerField({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (next: string) => void
+}) {
+  const ref = useRef<HTMLInputElement>(null)
+
+  function open() {
+    const input = ref.current as (HTMLInputElement & { showPicker?: () => void }) | null
+    if (!input) return
+    input.focus()
+    if (typeof input.showPicker === 'function') {
+      try {
+        input.showPicker()
+      } catch {
+        // 部分老浏览器要求严格的 user activation, 这里忽略
+      }
+    }
+  }
+
+  const display = value
+    ? new Date(value + 'T00:00:00').toLocaleDateString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      })
+    : '点击选择日期'
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={open}
+        className="block w-full rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-white/5"
+        style={{
+          background: 'var(--bn-glass)',
+          border: '0.5px solid var(--bn-glass-border)',
+          color: value ? 'var(--bn-text-primary)' : 'var(--bn-text-tertiary)',
+          minHeight: 38,
+        }}
+      >
+        {display}
+        {value && (
+          <span
+            role="button"
+            aria-label="清除"
+            onClick={(e) => {
+              e.stopPropagation()
+              onChange('')
+            }}
+            style={{
+              float: 'right',
+              color: 'var(--bn-text-tertiary)',
+              fontSize: 14,
+              lineHeight: '20px',
+              cursor: 'pointer',
+            }}
+          >
+            ×
+          </span>
+        )}
+      </button>
+      <input
+        ref={ref}
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="absolute inset-0 opacity-0"
+        style={{
+          pointerEvents: 'none',
+          colorScheme: 'light dark',
+        }}
+        tabIndex={-1}
+        aria-hidden
       />
     </div>
   )

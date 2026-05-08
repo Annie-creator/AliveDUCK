@@ -6,7 +6,7 @@ import { GlassPanel } from '@/components/ui/GlassPanel'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { isTargetDay, isDayCompleted, getStreak } from '@/lib/habit-stats'
-import { toDayKey, monthGrid, isSameMonth, isSameDay, CN_WEEKDAYS_MON } from '@/lib/calendar-utils'
+import { toDayKey } from '@/lib/calendar-utils'
 import type { Habit } from '@/types'
 
 /** 一个习惯的整体卡片:今日打卡 + streak + 月历热图 */
@@ -149,90 +149,12 @@ export function HabitCard({ habit }: { habit: Habit }) {
         </div>
       </div>
 
-      {/* 月历热图 */}
-      <HabitHeatmap habit={habit} />
+      {/* 月历热图已迁移到 UnifiedHabitCalendar(Phase D-1),这里不再重复 */}
     </GlassPanel>
   )
 }
 
-/** 月视图小方块热图 — 完成深色,未完成浅色,非目标日灰色 */
-function HabitHeatmap({ habit }: { habit: Habit }) {
-  const today = new Date()
-  const cells = monthGrid(today)
-  const startKey = toDayKey(cells[0]!)
-  const endKey = toDayKey(cells[41]!)
-
-  // 拉本月窗口内所有该习惯的 logs
-  const logs = useLiveQuery(
-    () =>
-      db.habit_logs
-        .where('habit_id')
-        .equals(habit.id)
-        .filter(
-          (l) => !l.deleted_at && l.date >= startKey && l.date <= endKey,
-        )
-        .toArray(),
-    [habit.id, startKey, endKey],
-    [],
-  )
-
-  const logByDate = new Map((logs ?? []).map((l) => [l.date, l]))
-
-  return (
-    <div className="mt-3">
-      <div className="mb-1 grid grid-cols-7 gap-0.5">
-        {CN_WEEKDAYS_MON.map((w) => (
-          <div
-            key={w}
-            className="text-center text-[8px] uppercase"
-            style={{ color: 'var(--bn-text-tertiary)' }}
-          >
-            {w}
-          </div>
-        ))}
-      </div>
-      <div className="grid grid-cols-7 gap-0.5">
-        {cells.map((d) => {
-          const k = toDayKey(d)
-          const log = logByDate.get(k)
-          const inMonth = isSameMonth(d, today)
-          const isFuture = d > today && !isSameDay(d, today)
-          const isTarget = isTargetDay(habit, d)
-          const completed = isDayCompleted(habit, log ?? null)
-
-          let bg = 'transparent'
-          if (!inMonth || isFuture) {
-            bg = 'transparent'
-          } else if (!isTarget) {
-            bg = 'var(--bn-glass)'
-          } else if (completed) {
-            bg = habit.color
-          } else if (log && log.count > 0) {
-            // 部分完成
-            bg = `${habit.color}55`
-          } else {
-            bg = 'var(--bn-glass)'
-          }
-
-          return (
-            <div
-              key={k}
-              className="aspect-square rounded-sm"
-              title={`${k}${log ? ` · ${log.count} 次` : ''}`}
-              style={{
-                background: bg,
-                opacity: inMonth ? 1 : 0.2,
-                border: isSameDay(d, today)
-                  ? '0.5px solid var(--bn-accent)'
-                  : '0.5px solid transparent',
-              }}
-            />
-          )
-        })}
-      </div>
-    </div>
-  )
-}
+/** 月历热图已迁移到 UnifiedHabitCalendar(Phase D-1) */
 
 /** 新建习惯表单 */
 export function HabitCreator() {

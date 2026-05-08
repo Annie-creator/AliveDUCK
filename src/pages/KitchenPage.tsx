@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { MealPlannerPanel } from '@/components/recipes/MealPlannerPanel'
+import { RecipeMenuPanel } from '@/components/recipes/RecipeMenuPanel'
 import { ShoppingListPanel } from '@/components/shopping/ShoppingListPanel'
 import { PantryPanel } from '@/components/shopping/PantryPanel'
 
-type Tab = 'plan' | 'shopping' | 'pantry'
+type Tab = 'plan' | 'menu' | 'shopping' | 'pantry'
 
 export function KitchenPage() {
   const [tab, setTab] = useState<Tab>('plan')
@@ -33,7 +34,7 @@ export function KitchenPage() {
         </h1>
       </div>
 
-      <div className="flex gap-1 rounded-full p-0.5 self-start"
+      <div className="flex flex-wrap gap-1 rounded-full p-0.5 self-start"
         style={{
           background: 'var(--bn-glass)',
           border: '0.5px solid var(--bn-glass-border)',
@@ -41,6 +42,7 @@ export function KitchenPage() {
         }}>
         {([
           { key: 'plan' as const, label: '🍽 用餐预订' },
+          { key: 'menu' as const, label: '📒 菜单' },
           { key: 'shopping' as const, label: '🛒 购物清单' },
           { key: 'pantry' as const, label: '📦 库存' },
         ]).map((t) => (
@@ -62,6 +64,7 @@ export function KitchenPage() {
       </div>
 
       {tab === 'plan' && <MealPlannerPanel />}
+      {tab === 'menu' && <RecipeMenuPanel />}
       {tab === 'shopping' && <ShoppingListPanel />}
       {tab === 'pantry' && <PantryPanel />}
     </div>

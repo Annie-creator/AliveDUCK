@@ -82,6 +82,19 @@ export class BanyaDB extends Dexie {
 
       settings: '&id, updated_at, deleted_at, &key',
     })
+
+    // ─── v2 (Phase D-2): Recipe 加 meal_types[] + duration_minutes
+    //     字段不索引,所以只需要 upgrade() 给老数据填默认 ──────────────
+    this.version(2)
+      .stores({
+        recipes: '&id, updated_at, deleted_at, name',
+      })
+      .upgrade(async (tx) => {
+        await tx.table('recipes').toCollection().modify((r: { meal_types?: unknown; duration_minutes?: unknown }) => {
+          if (!Array.isArray(r.meal_types)) r.meal_types = []
+          if (typeof r.duration_minutes !== 'number') r.duration_minutes = 30
+        })
+      })
   }
 }
 

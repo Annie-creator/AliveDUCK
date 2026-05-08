@@ -12,6 +12,7 @@
  */
 
 import { focusRepo, settingsRepo } from '@/repositories'
+import { fireCompletionConfetti } from '@/lib/confetti'
 
 export type PomodoroMode = 'focus' | 'short_break' | 'long_break'
 export type PomodoroStatus = 'idle' | 'running' | 'paused'
@@ -40,6 +41,9 @@ export interface PomodoroState {
   linkedHabitId: string | null
   /** 当前一轮内已完成的 focus 数(0..3,达到 longBreakEvery 时长休)*/
   focusCountInCycle: number
+  /** 本次专注时长临时覆盖(分钟)。null 表示用 config.focusMinutes。
+   *  完成本轮 focus / 用户 stop 时自动清回 null,只影响"下一次启动" */
+  focusOverrideMinutes: number | null
 }
 
 export const DEFAULT_CONFIG: PomodoroConfig = {
@@ -70,6 +74,7 @@ class PomodoroEngine {
     taskName: '',
     linkedHabitId: null,
     focusCountInCycle: 0,
+    focusOverrideMinutes: null,
   }
   private config: PomodoroConfig = DEFAULT_CONFIG
   private worker: Worker | null = null
@@ -110,6 +115,25 @@ class PomodoroEngine {
     this.notify()
   }
 
+  /**
+   * 临时覆盖本次专注时长。
+   *
+   * 设计：
+   *   - 仅在 idle + mode === 'focus' 时生效（运行/休息中改没意义）
+   *   - 立刻刷新 remainingMs / totalMs，UI 大数字立刻变
+   *   - 启动 → 完成或停止 → 自动清回 null,下次回到 config.focusMinutes
+   *   - 传 null 也可以,等于"恢复默认"
+   */
+  setFocusOverride(minutes: number | null): void {
+    if (this.state.status !== 'idle' || this.state.mode !== 'focus') return
+    const sanitized = minutes !== null && minutes > 0 && minutes <= 240 ? minutes : null
+    this.state = { ...this.state, focusOverrideMinutes: sanitized }
+    const totalMs = this.computeTotalForMode('focus')
+    this.state = { ...this.state, remainingMs: totalMs, totalMs }
+    this.persist()
+    this.notify()
+  }
+
   /** 开始当前 mode 的计时 */
   start(): void {
     if (this.state.status === 'running') return
@@ -143,6 +167,9 @@ class PomodoroEngine {
   stop(): void {
     this.worker?.postMessage({ type: 'stop' })
     this.terminateWorker()
+    // 主动停止 → 清掉本次时长覆盖,回到默认
+    const clearedState = { ...this.state, focusOverrideMinutes: null }
+    this.state = clearedState
     const totalMs = this.computeTotalForMode(this.state.mode)
     this.state = {
       ...this.state,
@@ -235,7 +262,9 @@ class PomodoroEngine {
   private computeTotalForMode(mode: PomodoroMode): number {
     const c = this.config
     switch (mode) {
-      case 'focus': return c.focusMinutes * 60 * 1000
+      case 'focus':
+        // 优先用本次临时覆盖,否则用配置默认值
+        return (this.state.focusOverrideMinutes ?? c.focusMinutes) * 60 * 1000
       case 'short_break': return c.shortBreakMinutes * 60 * 1000
       case 'long_break': return c.longBreakMinutes * 60 * 1000
     }
@@ -271,14 +300,19 @@ class PomodoroEngine {
     // 决定下一阶段
     let nextMode: PomodoroMode
     let nextCount = this.state.focusCountInCycle
+    let nextOverride = this.state.focusOverrideMinutes
     if (this.state.mode === 'focus') {
       nextCount += 1
       nextMode = nextCount % this.config.longBreakEvery === 0 ? 'long_break' : 'short_break'
+      // focus 结束 → 清掉本次时长覆盖,下一轮 focus 回到默认
+      nextOverride = null
     } else {
       nextMode = 'focus'
       if (this.state.mode === 'long_break') nextCount = 0
     }
 
+    // 先把 override 清了再算 totalMs,否则 computeTotalForMode 仍读到旧值
+    this.state = { ...this.state, focusOverrideMinutes: nextOverride }
     const totalMs = this.computeTotalForMode(nextMode)
     this.state = {
       ...this.state,
@@ -311,11 +345,24 @@ class PomodoroEngine {
 
   private fireCompletionFx(): void {
     const c = this.config
-    // 1. 通知
+    // 注意:advance() 调用本函数时, state.mode 已经切到 nextMode
+    // 所以"现在是 break"意味着"刚刚完成了 focus"
+    const justFinishedFocus = this.state.mode !== 'focus'
+
+    // 1. 彩带（只在 focus 完成时撒,break 完成不撒,避免疲劳）
+    if (justFinishedFocus) {
+      try {
+        fireCompletionConfetti()
+      } catch {
+        // ignore — 浏览器不支持也无所谓
+      }
+    }
+
+    // 2. 通知
     if (c.enableNotification && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       try {
-        const title = this.state.mode === 'focus' ? '专注完成 ✓' : '休息结束 ↻'
-        const body = this.state.mode === 'focus'
+        const title = justFinishedFocus ? '🍅 一个番茄完成 ✓' : '休息结束 ↻'
+        const body = justFinishedFocus
           ? `刚完成的是:${this.state.taskName || '专注'}。要不要休息一下?`
           : '该回到工作了'
         new Notification(title, { body, tag: 'bn_pomodoro' })
@@ -323,7 +370,7 @@ class PomodoroEngine {
         // ignore
       }
     }
-    // 2. 完成音效(在 PomodoroPanel 那边弹奏 Audio,因为引擎不持有 Audio 句柄)
+    // 3. 完成音效(在 PomodoroPanel 那边弹奏 Audio,因为引擎不持有 Audio 句柄)
     if (c.enableChime) {
       window.dispatchEvent(new CustomEvent('bn:pomodoro:chime'))
     }
