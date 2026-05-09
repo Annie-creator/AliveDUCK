@@ -36,6 +36,7 @@ import { syncEngine } from '@/lib/sync-engine'
 import { rateToBase, getRates, getBaseCurrency } from '@/lib/currency'
 import { classifyOne } from '@/lib/classifier'
 import { categoryRepo } from '@/repositories'
+import { makeFinanceContentKey } from '@/lib/dedup-finance'
 
 export interface XlsxImportPreview {
   /** 解析出的待导入流水(已去过重),已是完整的 FinanceTransaction */
@@ -151,10 +152,8 @@ function findHeaderRow(rows: unknown[][]): number {
   return -1
 }
 
-/** 内容键 —— 跟 dedup-finance.ts 完全一致,确保两边判重逻辑统一 */
-function makeContentKey(occurredAt: string, amount: number, participant: string, note: string): string {
-  return `${occurredAt}|${amount.toFixed(2)}|${participant.trim()}|${note.trim()}`
-}
+// 内容键改用 dedup-finance.ts 里那个带 NFKC 归一化的版本(导入)
+// 这样 importer 跳过的 vs dedup 合并的 是完全一样的判定
 
 export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview> {
   const { read, utils } = await import('xlsx')
@@ -250,7 +249,7 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
   const existingContentKeys = new Set<string>()
   for (const t of allExistingAlive) {
     existingContentKeys.add(
-      makeContentKey(t.occurred_at, t.amount, t.participant ?? '', t.note ?? ''),
+      makeFinanceContentKey(t.user_id, t.occurred_at, t.amount, t.participant ?? '', t.note ?? ''),
     )
   }
   const seenInBatch = new Set<string>()
@@ -334,7 +333,7 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
       columnMap.merchant !== undefined ? String(r[columnMap.merchant] ?? '').trim() : ''
 
     // ★★★ 内容查重 —— 在做分类工作之前先短路,省力 ★★★
-    const contentKey = makeContentKey(occurredAtIso, amount, participant, note)
+    const contentKey = makeFinanceContentKey(userId, occurredAtIso, amount, participant, note)
     if (seenInBatch.has(contentKey)) {
       alreadyExistsCount++
       // Excel 内部重复,静默(不刷屏 warnings)

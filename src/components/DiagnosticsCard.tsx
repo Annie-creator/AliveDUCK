@@ -196,6 +196,68 @@ export function DiagnosticsCard() {
     }
   }
 
+  /**
+   * 用云端覆盖本地 —— 终极兜底。
+   *
+   * 流程:
+   *   1. stop sync engine
+   *   2. close + 删 IndexedDB (banya_alive)
+   *   3. 清所有 bn_last_synced_* cursor + 老的 meal_plan:* localStorage 残留
+   *   4. reload 页面 → AuthProvider 自动登入 → SyncProvider 启动 → 全量 pull
+   *
+   * 用于:本地状态烂得没法救(N 倍重复、cursor 永远跑不齐、各种诡异情况)。
+   * 前提:
+   *   - 同步状态 idle
+   *   - 待推送 = 0(否则你最近改的会丢)
+   *   - 云端是你想要的状态(必要时先在另一端把云端清干净)
+   */
+  async function wipeLocalUseCloud() {
+    if (
+      !confirm(
+        '⚠️ 把本地所有数据清空,从云端重新拉一份。\n\n做之前确认这两条:\n1. 同步状态是 idle\n2. 待推送 = 0\n\n否则你最近还没推上去的修改会丢。\n\n确定继续?',
+      )
+    ) {
+      return
+    }
+    setRePullBusy(true)
+    setRePullMsg('停同步引擎…')
+    try {
+      await syncEngine.stop()
+
+      setRePullMsg('清本地 IndexedDB(banya_alive)…')
+      // Dexie 的 close 不阻塞 IndexedDB 删除;直接 delete 即可
+      db.close()
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase('banya_alive')
+        req.onsuccess = () => resolve()
+        req.onerror = () => reject(new Error('删 IndexedDB 失败'))
+        req.onblocked = () =>
+          reject(new Error('删 IndexedDB 被阻塞 — 可能有别的 tab/窗口打开,请先关掉'))
+      })
+
+      setRePullMsg('清同步 cursor + localStorage 残留…')
+      const keys: string[] = []
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i)
+        if (
+          k &&
+          (k.startsWith('bn_last_synced_') ||
+            k.startsWith('meal_plan:')) // 老 localStorage 用餐预订残留
+        ) {
+          keys.push(k)
+        }
+      }
+      for (const k of keys) localStorage.removeItem(k)
+
+      setRePullMsg('刷新页面 → 重新从云端拉…')
+      // 给用户看到提示再刷新
+      setTimeout(() => window.location.reload(), 800)
+    } catch (e) {
+      setRePullMsg(`✗ 失败:${(e as Error).message}`)
+      setRePullBusy(false)
+    }
+  }
+
   if (!report) {
     return (
       <GlassPanel padding="lg" radius="lg">
@@ -435,6 +497,46 @@ export function DiagnosticsCard() {
               {rePullBusy ? '处理中…' : '强制全量重拉'}
             </Button>
           </div>
+
+          {/* —— 终极兜底:用云端覆盖本地(删 IndexedDB + reload) —— */}
+          <div
+            className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3"
+            style={{ borderColor: 'var(--bn-row-border)' }}
+          >
+            <div className="min-w-0 flex-1">
+              <p
+                style={{
+                  fontSize: 12,
+                  color: 'var(--bn-negative)',
+                  fontWeight: 500,
+                }}
+              >
+                ⚠️ 用云端覆盖本地
+              </p>
+              <p
+                style={{
+                  fontSize: 10,
+                  color: 'var(--bn-text-tertiary)',
+                  marginTop: 2,
+                  lineHeight: 1.5,
+                }}
+              >
+                清空本地 IndexedDB,刷新后从云端重拉一份。终极兜底,做前先确认状态 idle、待推 0。
+              </p>
+            </div>
+            <Button
+              onClick={() => void wipeLocalUseCloud()}
+              disabled={
+                rePullBusy ||
+                report.syncStatus !== 'idle' ||
+                report.pendingCount > 0
+              }
+              variant="glass"
+            >
+              {rePullBusy ? '处理中…' : '用云端覆盖本地'}
+            </Button>
+          </div>
+
           {rePullMsg && (
             <p
               className="mt-2"
@@ -684,11 +786,14 @@ async function collectDiagnostics(): Promise<DiagnosticsReport> {
   const fSeen = new Map<string, string>()
   let finDups = 0
   const samples: string[] = []
+  // 跟 dedup-finance 用的归一化保持一致
+  const norm = (s: string) =>
+    s ? s.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase() : ''
   for (const t of allFin) {
-    const k = `${t.occurred_at}|${t.amount.toFixed(2)}|${(t.participant ?? '').trim()}|${(t.note ?? '').trim()}`
+    const k = `${t.user_id}|${t.occurred_at}|${t.amount.toFixed(2)}|${norm(t.participant ?? '')}|${norm(t.note ?? '')}`
     if (fSeen.has(k)) {
       finDups++
-      if (samples.length < 3) {
+      if (samples.length < 10) {
         const dt = new Date(t.occurred_at).toISOString().slice(0, 10)
         const part = t.participant?.trim() || '(无商家)'
         const note = (t.note ?? '').slice(0, 30)

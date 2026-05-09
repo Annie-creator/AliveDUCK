@@ -1,25 +1,28 @@
 /**
- * 流水内容去重 —— 给「重复导入 Excel」造成的脏数据兜底。
+ * 流水内容去重(2026-05 根治版)。
  *
- * 触发场景:
- * 1. 用户在 guest 空窗期点了导入 → 登录 → 又点一次 → 反复 N 次 → 一份文件被导 N 份
- * 2. 不同设备各自导入了同一份 Excel(手机/电脑各点一次)
- * 3. 误触"确认导入"按钮多次
+ * 升级:**判重键现在做 NFKC 归一化 + 空格折叠 + 小写**。
  *
- * importer 之前没做内容去重(commitXlsxImport 里写得很明白:"不去重"),
- * 所以一旦发生上面任何一种,本地就会堆出一堆 UUID 不同、但内容完全一样的行。
- * 推到云端后 (user_id, key) 没约束(流水不像 settings 有唯一约束),
- * 云端也乖乖收下,然后两端越来越多。
+ * 之前的版本用 `participant.trim() + note.trim()`,以下情况都会漏掉:
  *
- * 去重键:`occurred_at + amount + participant + note`
- *   - 不含 currency:同一笔不会同时存在 EUR 和 CNY 版本(currency 不变)
- *   - 不含 category_id:用户可能手动改了某些行的分类,但 key 不变
- *   - 不含 type:expense vs income 不会撞(amount 同 + occurred_at 同 + 商家备注同
- *     时,基本不可能同一秒既支出又收入同样的金额)
+ *   - "Mercadona" vs "MERCADONA" vs "mercadona" → 大小写
+ *   - "塑料袋" vs "塑料袋 "(尾部全角空格)→ trim 不到
+ *   - "在  西班牙"(连续空格)vs "在 西班牙"(单空格)→ 不同
+ *   - "Mercadona　Sevilla"(全角空格)vs "Mercadona Sevilla"(半角)→ 不同
+ *   - "Café"(预合成)vs "Café"(组合字符 e + ́)→ 看起来一样,代码点不一样
  *
- * keeper 选取(跟 dedup-categories 一致):
- *   1. sync_status='synced' 优先 —— 它的 id 已和云端绑定,留它推送时不会撞
- *   2. 同状态下 created_at 早的优先(可重入,稳定)
+ * 新归一化:
+ *   1. NFKC:全角→半角、组合字符→预合成、上下标→普通字符
+ *   2. /\s+/ → ' ':任意空白(空格、Tab、换行、全角空格)折叠成一个半角空格
+ *   3. trim
+ *   4. lowercase
+ *
+ * 这样 "Mercadona" / "MERCADONA" / "Mercadona　" 全部归一到 "mercadona",
+ * 同金额 + 同日期 + 同商家(归一后)+ 同备注(归一后)= 同一笔。
+ *
+ * keeper 选取(沿用):
+ *   1. sync_status='synced' 优先(它的 id 已和云端绑,留它推时不撞)
+ *   2. 同状态下 created_at 早的优先
  */
 
 import { db } from '@/db'
@@ -29,8 +32,34 @@ import type { FinanceTransaction } from '@/types'
 export interface FinanceDedupReport {
   groupsFound: number
   duplicatesRemoved: number
-  /** 前几个被合并的样本,UI 给用户看一眼信任 */
   affectedSamples: string[]
+}
+
+/** 文本归一化 —— importer 和 dedup 必须用同一个,否则两边判重对不齐 */
+export function normalizeText(s: string): string {
+  if (!s) return ''
+  return s
+    .normalize('NFKC') // 全角→半角、合成字符等
+    .replace(/\s+/g, ' ') // 各种空白折叠
+    .trim()
+    .toLowerCase()
+}
+
+/** 内容键 —— 跟 migrate-xlsx 保持完全一致 */
+export function makeFinanceContentKey(
+  userId: string,
+  occurredAt: string,
+  amount: number,
+  participant: string,
+  note: string,
+): string {
+  return [
+    userId,
+    occurredAt,
+    amount.toFixed(2),
+    normalizeText(participant),
+    normalizeText(note),
+  ].join('|')
 }
 
 export async function countDuplicateFinance(): Promise<number> {
@@ -58,12 +87,10 @@ export async function dedupFinance(): Promise<FinanceDedupReport> {
     arr.sort(compareForKeeper)
     const keeper = arr[0]!
 
-    if (samples.length < 5) {
+    if (samples.length < 8) {
       const dt = new Date(keeper.occurred_at).toISOString().slice(0, 10)
       const part = keeper.participant?.trim() || '(无商家)'
-      samples.push(
-        `${dt} ${part} €${keeper.amount.toFixed(2)} ×${arr.length}`,
-      )
+      samples.push(`${dt} ${part} €${keeper.amount.toFixed(2)} ×${arr.length}`)
     }
 
     for (let i = 1; i < arr.length; i++) {
@@ -71,7 +98,7 @@ export async function dedupFinance(): Promise<FinanceDedupReport> {
         await financeRepo.softDelete(arr[i]!.id)
         duplicatesRemoved++
       } catch {
-        // 已删等情况都吞掉,不打断
+        // 已删/找不到等情况吞掉
       }
     }
   }
@@ -92,8 +119,13 @@ function groupByContent(
 ): Map<string, FinanceTransaction[]> {
   const m = new Map<string, FinanceTransaction[]>()
   for (const r of rows) {
-    // 注意:把 user_id 也放进 key,避免不同账号的相同内容互相合并
-    const k = `${r.user_id}|${r.occurred_at}|${r.amount.toFixed(2)}|${(r.participant ?? '').trim()}|${(r.note ?? '').trim()}`
+    const k = makeFinanceContentKey(
+      r.user_id,
+      r.occurred_at,
+      r.amount,
+      r.participant ?? '',
+      r.note ?? '',
+    )
     const arr = m.get(k) ?? []
     arr.push(r)
     m.set(k, arr)

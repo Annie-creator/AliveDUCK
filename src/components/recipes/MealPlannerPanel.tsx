@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { X, Clock, ShoppingCart, Check, AlertCircle, Shuffle, Info } from 'lucide-react'
 import { db } from '@/db'
@@ -10,28 +10,27 @@ import {
   filterRecipesByDuration,
   filterRecipesByMealType,
 } from '@/lib/recipe-availability'
+import { settingsRepo } from '@/repositories'
 import type { MealType, PantryItem, Recipe, RecipeItem } from '@/types'
 import { MEAL_TYPES } from '@/types'
 
 /**
- * 用餐预订 7 天视图(2026-05 升级版)。
+ * 用餐预订 7 天视图(2026-05 同步根治版)。
  *
- * 这一版改了 4 件事:
+ * **关键修复:数据从 localStorage 搬到 settings 表(走同步引擎)。**
  *
- * 1. **6 个餐次**(以前只有 3 个):早餐/午餐/晚餐 + 零食/饮品/夜宵。
- *    数据模型早就在 MEAL_TYPES 里定义了 6 种,只是 planner 自己写死成 3 个。
+ * 之前 meal_plan:YYYY-MM-DD 只在 localStorage,导致手机和电脑各自一套。
+ * 现在每个 settings 行 key='meal_plan:YYYY-MM-DD',value 是 DayPlan 的 JSON。
+ * settings 表本来就在 sync engine 的 TABLES 里,自动跨端同步。
  *
- * 2. **一餐多菜**:每个 slot 现在存 string[] 而不是 string|null。
- *    点 + 加菜可以连续添加多道,picker 不会关。X 单独移除某道。
+ * 老数据迁移:挂载时扫描 localStorage,把所有 meal_plan:* 键的值搬到 settings,
+ * 搬完删掉 localStorage 那条。一次性,幂等。
  *
- * 3. **随机配餐**(🎲):只填空格,不覆盖已选。按 slot 的餐次类型过滤
- *    可选菜池,优先避开同一天重复出现的菜。
- *
- * 4. **「一键加食材」改名**:之前用户看不懂,现在叫「加进购物清单」+ 解释。
- *    行为没变 —— 把所有计划好的菜的食材合并加进购物清单(同名累加)。
- *
- * 数据存储:仍用 localStorage `meal_plan:YYYY-MM-DD`,自动迁移老格式
- * (string|null → string[],其它新 slot 缺省 [])。
+ * 其它(承袭 v2):
+ * - 6 餐次:早/午/晚/零食/饮品/夜宵
+ * - 一餐多菜:slot 存 string[]
+ * - 随机配餐:只填空格
+ * - 「加进购物清单」用 ⓘ 解释
  */
 
 const SLOTS = ['breakfast', 'lunch', 'dinner', 'snack', 'drinks', 'lateNight'] as const
@@ -61,36 +60,22 @@ function emptyPlan(): DayPlan {
   }
 }
 
-/** 老数据迁移:string|null → string[];缺失的 slot → [] */
 function normalizeSlot(v: unknown): string[] {
   if (Array.isArray(v)) return v.filter((x) => typeof x === 'string')
   if (typeof v === 'string' && v) return [v]
   return []
 }
 
-function loadPlan(dayKey: string): DayPlan {
-  try {
-    const raw = localStorage.getItem(PLAN_KEY_PREFIX + dayKey)
-    if (!raw) return emptyPlan()
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    return {
-      breakfast: normalizeSlot(parsed.breakfast),
-      lunch: normalizeSlot(parsed.lunch),
-      dinner: normalizeSlot(parsed.dinner),
-      snack: normalizeSlot(parsed.snack),
-      drinks: normalizeSlot(parsed.drinks),
-      lateNight: normalizeSlot(parsed.lateNight),
-    }
-  } catch {
-    return emptyPlan()
-  }
-}
-
-function savePlan(dayKey: string, plan: DayPlan): void {
-  try {
-    localStorage.setItem(PLAN_KEY_PREFIX + dayKey, JSON.stringify(plan))
-  } catch {
-    // ignore
+function normalizePlan(raw: unknown): DayPlan {
+  if (!raw || typeof raw !== 'object') return emptyPlan()
+  const r = raw as Record<string, unknown>
+  return {
+    breakfast: normalizeSlot(r.breakfast),
+    lunch: normalizeSlot(r.lunch),
+    dinner: normalizeSlot(r.dinner),
+    snack: normalizeSlot(r.snack),
+    drinks: normalizeSlot(r.drinks),
+    lateNight: normalizeSlot(r.lateNight),
   }
 }
 
@@ -98,15 +83,45 @@ function dayKeyOf(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-/**
- * 给定 slot 的餐次类型,返回适合的菜:
- *   - 菜的 meal_types 含此餐次 → 严格匹配
- *   - 菜的 meal_types 为空 → "万能"菜,任何 slot 都行
- */
 function recipesForMealType(mealType: MealType, recipes: Recipe[]): Recipe[] {
   return recipes.filter(
     (r) => !r.meal_types || r.meal_types.length === 0 || r.meal_types.includes(mealType),
   )
+}
+
+/**
+ * 一次性迁移:把 localStorage 里的 meal_plan:* 全部搬到 settings 表。
+ * 失败的留在 localStorage,下次再试。
+ * 搬成功的从 localStorage 删掉,避免下次又读老的。
+ */
+async function migrateLocalStoragePlans(): Promise<number> {
+  if (typeof window === 'undefined' || !window.localStorage) return 0
+  const keysToMigrate: string[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i)
+    if (k && k.startsWith(PLAN_KEY_PREFIX)) keysToMigrate.push(k)
+  }
+  if (keysToMigrate.length === 0) return 0
+
+  let migrated = 0
+  for (const key of keysToMigrate) {
+    try {
+      const raw = localStorage.getItem(key)
+      if (!raw) continue
+      const parsed = JSON.parse(raw)
+      // 只在 settings 还没这条时才搬,避免覆盖云端最新值
+      const existing = await settingsRepo.getValue(key)
+      if (existing === null) {
+        await settingsRepo.setValue(key, normalizePlan(parsed))
+      }
+      // 不论搬不搬,迁移完都把 localStorage 删了 —— 防止再读老的
+      localStorage.removeItem(key)
+      migrated++
+    } catch {
+      // 留着下次重试
+    }
+  }
+  return migrated
 }
 
 /* ────────────────────────────────────────────────── */
@@ -116,7 +131,17 @@ export function MealPlannerPanel() {
   const [pickerOpen, setPickerOpen] = useState<{ dayKey: string; slot: SlotKey } | null>(null)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [tip, setTip] = useState(false)
-  const [allPlans, setAllPlans] = useState(0) // 强制刷新 localStorage 读
+
+  // 启动时迁移一次老 localStorage 数据
+  useEffect(() => {
+    void (async () => {
+      const n = await migrateLocalStoragePlans()
+      if (n > 0) {
+        setFeedback(`✓ 老的 ${n} 天用餐预订已迁移到云端,从此跨设备同步`)
+        setTimeout(() => setFeedback(null), 5000)
+      }
+    })()
+  }, [])
 
   const recipes = useLiveQuery(
     () => db.recipes.filter((r) => !r.deleted_at).sortBy('name'),
@@ -134,6 +159,16 @@ export function MealPlannerPanel() {
     [],
   )
 
+  // ★ 关键改动:实时订阅所有 meal_plan:* settings,跨设备同步靠它 ★
+  const allPlanSettings = useLiveQuery(
+    () =>
+      db.settings
+        .filter((s) => !s.deleted_at && s.key.startsWith(PLAN_KEY_PREFIX))
+        .toArray(),
+    [],
+    [],
+  )
+
   const itemsByRecipe = useMemo(() => {
     const m = new Map<string, RecipeItem[]>()
     for (const it of allItems ?? []) {
@@ -144,7 +179,16 @@ export function MealPlannerPanel() {
     return m
   }, [allItems])
 
-  // 7 天:今天起向后
+  /** 把 settings 行映射成 date → DayPlan */
+  const plansMap = useMemo(() => {
+    const m = new Map<string, DayPlan>()
+    for (const s of allPlanSettings ?? []) {
+      const date = s.key.slice(PLAN_KEY_PREFIX.length)
+      m.set(date, normalizePlan(s.value))
+    }
+    return m
+  }, [allPlanSettings])
+
   const days = useMemo(() => {
     const arr: Date[] = []
     for (let i = 0; i < 7; i++) {
@@ -157,36 +201,37 @@ export function MealPlannerPanel() {
   }, [today.toDateString()])
 
   const dayPlans = useMemo(() => {
-    return days.map((d) => ({ date: d, key: dayKeyOf(d), plan: loadPlan(dayKeyOf(d)) }))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days, allPlans])
+    return days.map((d) => {
+      const key = dayKeyOf(d)
+      return { date: d, key, plan: plansMap.get(key) ?? emptyPlan() }
+    })
+  }, [days, plansMap])
 
-  /** 通用更新:对某天某 slot 应用变换 */
-  function updateSlot(
+  /** 通用更新:对某天某 slot 应用变换,写到 settings 表(自动同步) */
+  async function updateSlot(
     dKey: string,
     slot: SlotKey,
     transform: (current: string[]) => string[],
   ) {
-    const plan = loadPlan(dKey)
-    const next: DayPlan = { ...plan, [slot]: transform(plan[slot]) }
-    savePlan(dKey, next)
-    setAllPlans((n) => n + 1)
+    const cur = plansMap.get(dKey) ?? emptyPlan()
+    const next: DayPlan = { ...cur, [slot]: transform(cur[slot]) }
+    await settingsRepo.setValue(PLAN_KEY_PREFIX + dKey, next)
   }
 
   function addRecipeTo(dKey: string, slot: SlotKey, recipeId: string) {
-    updateSlot(dKey, slot, (cur) => (cur.includes(recipeId) ? cur : [...cur, recipeId]))
+    void updateSlot(dKey, slot, (cur) => (cur.includes(recipeId) ? cur : [...cur, recipeId]))
   }
 
   function removeRecipeFrom(dKey: string, slot: SlotKey, recipeId: string) {
-    updateSlot(dKey, slot, (cur) => cur.filter((id) => id !== recipeId))
+    void updateSlot(dKey, slot, (cur) => cur.filter((id) => id !== recipeId))
   }
 
   function clearSlot(dKey: string, slot: SlotKey) {
-    updateSlot(dKey, slot, () => [])
+    void updateSlot(dKey, slot, () => [])
   }
 
-  /** 随机填充所有空格 —— 已填的不动 */
-  function randomFillEmpty() {
+  /** 随机填充所有空格 */
+  async function randomFillEmpty() {
     const allRecipes = recipes ?? []
     if (allRecipes.length === 0) {
       setFeedback('没菜可选 —— 先去"菜单"tab 加几道')
@@ -198,7 +243,6 @@ export function MealPlannerPanel() {
     let skipped = 0
 
     for (const dp of dayPlans) {
-      // 记录这一天已经选过的菜,后续 slot 优先避开
       const usedToday = new Set<string>()
       for (const slot of SLOTS) {
         for (const id of dp.plan[slot]) usedToday.add(id)
@@ -208,13 +252,11 @@ export function MealPlannerPanel() {
       let dayChanged = false
 
       for (const slot of SLOTS) {
-        if (nextPlan[slot].length > 0) continue // 不覆盖已选
+        if (nextPlan[slot].length > 0) continue
 
-        // 池:严格匹配餐次的菜;不够再退到全部
         let pool = recipesForMealType(SLOT_INFO[slot].mealType, allRecipes)
         if (pool.length === 0) pool = allRecipes
 
-        // 优先避开当天已选的
         const fresh = pool.filter((r) => !usedToday.has(r.id))
         const final = fresh.length > 0 ? fresh : pool
 
@@ -230,10 +272,10 @@ export function MealPlannerPanel() {
         dayChanged = true
       }
 
-      if (dayChanged) savePlan(dp.key, nextPlan)
+      if (dayChanged) {
+        await settingsRepo.setValue(PLAN_KEY_PREFIX + dp.key, nextPlan)
+      }
     }
-
-    setAllPlans((n) => n + 1)
 
     if (filled === 0) {
       setFeedback('没有空格可填(全部满了 / 随机池为空)')
@@ -275,7 +317,6 @@ export function MealPlannerPanel() {
 
   return (
     <div className="space-y-3">
-      {/* 顶部说明 + 操作区 */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
           <p
@@ -292,7 +333,7 @@ export function MealPlannerPanel() {
         <div className="flex flex-wrap items-center gap-1.5">
           <Button
             variant="glass"
-            onClick={randomFillEmpty}
+            onClick={() => void randomFillEmpty()}
             disabled={(recipes ?? []).length === 0}
             title="只填空格,已选的菜不会动"
           >
@@ -327,8 +368,7 @@ export function MealPlannerPanel() {
                   boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
                 }}
               >
-                把未来 7 天计划的所有菜需要的食材,一次性合并加到 <strong style={{ color: 'var(--bn-text-primary)' }}>购物清单</strong>。
-                同名食材自动累加 —— 比如两道菜都需要土豆,变成一条「土豆」总量相加,不会重复。
+                把未来 7 天计划的所有菜需要的食材,一次性合并加到 <strong style={{ color: 'var(--bn-text-primary)' }}>购物清单</strong>。同名食材自动累加。
                 <button
                   type="button"
                   onClick={() => setTip(false)}
@@ -343,7 +383,6 @@ export function MealPlannerPanel() {
         </div>
       </div>
 
-      {/* 7 天网格 */}
       <div className="space-y-2">
         {dayPlans.map(({ date, key, plan }, i) => (
           <DayRow
@@ -389,7 +428,6 @@ export function MealPlannerPanel() {
   )
 }
 
-/* ── 单日一行 ─────────────────────────────────────── */
 function DayRow({
   date,
   isToday,
@@ -417,7 +455,6 @@ function DayRow({
   return (
     <GlassPanel padding="md" radius="lg" variant={isToday ? 'strong' : 'default'}>
       <div className="flex items-stretch gap-2">
-        {/* 日期列 */}
         <div className="flex w-12 shrink-0 flex-col items-center justify-center">
           <span
             style={{
@@ -444,7 +481,6 @@ function DayRow({
           </span>
         </div>
 
-        {/* 6 个 slot:窄屏 2 列、宽屏 3 列 */}
         <div className="grid flex-1 grid-cols-2 gap-1.5 sm:grid-cols-3">
           {SLOTS.map((slot) => (
             <SlotCell
@@ -465,7 +501,6 @@ function DayRow({
   )
 }
 
-/* ── 一个 slot 单元格 ────────────────────────────── */
 function SlotCell({
   slot,
   recipeIds,
@@ -553,7 +588,6 @@ function SlotCell({
         {recipeIds.map((rid) => {
           const recipe = recipes.find((r) => r.id === rid)
           if (!recipe) {
-            // 菜被删了 —— 给一个清理按钮
             return (
               <div key={rid} className="flex items-center gap-1.5">
                 <span style={{ fontSize: 'var(--bn-text-xs)', color: 'var(--bn-text-tertiary)' }}>
@@ -637,7 +671,6 @@ function SlotCell({
   )
 }
 
-/* ── Recipe picker modal —— 现在是「管理本餐次」模式 ─── */
 function RecipePickerModal({
   slot,
   dayLabel,
@@ -725,7 +758,6 @@ function RecipePickerModal({
           </button>
         </div>
 
-        {/* 已选区 */}
         {currentRecipes.length > 0 && (
           <div
             className="mb-3 rounded-xl p-2.5"
@@ -768,7 +800,6 @@ function RecipePickerModal({
           </div>
         )}
 
-        {/* 筛选 */}
         <div className="space-y-1.5">
           <FilterRow label="餐次">
             <FilterChip active={mealFilter === null} onClick={() => setMealFilter(null)}>
@@ -803,7 +834,6 @@ function RecipePickerModal({
           </FilterRow>
         </div>
 
-        {/* 列表 */}
         <div className="mt-3 space-y-1.5">
           {filtered.length === 0 ? (
             <p
@@ -872,7 +902,6 @@ function RecipePickerModal({
           )}
         </div>
 
-        {/* 完成 */}
         <div
           className="sticky bottom-0 -mx-5 -mb-5 mt-4 px-5 py-3"
           style={{
@@ -919,7 +948,6 @@ function AvailabilityLine({ avail }: { avail: ReturnType<typeof checkAvailabilit
   )
 }
 
-/* ── 小工具 ──────────────────────────────────────── */
 function FilterRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
