@@ -1,21 +1,29 @@
 /**
- * Excel 账本导入器。
+ * Excel 账本导入器(2026-05 根治版)。
  *
- * 设计原则:
- * 1. 表头自动识别 —— 在前 5 行内找包含"金额/amount"的行作为表头
- * 2. 列名宽松匹配 —— 中英常见命名都识别("年"="year"="yyyy" 等)
- * 3. 单位识别 —— "欧" → EUR, "元" → CNY, "美元" → USD,可扩展
- * 4. 防御式解析 —— 单行错误不打断整批,作为 warnings 返回
- * 5. 两阶段提交 —— parse 出预览,UI 让用户确认,再 commit 落库
- * 6. **xlsx 库通过 dynamic import 加载** —— 350KB 的库只在用户导入时下载,
- *    首屏不背锅
+ * 改的核心:**导入前按"内容键"查重**。键 = `occurred_at + amount + participant + note`,
+ * 跟 dedup-finance.ts 用的判重逻辑一致。
  *
- * 归类策略（v2，2026-05）:
- * - 商家列（merchant）→ 进 participant 字段
- * - 分类列（categoryName）→ 按分类名直接映射 category_id
- *   · 命中（精确 / 大小写无关）→ 用这个 category_id，跳过自动分类
- *   · 未命中 → 自动分类器兜底（关键字 + 学习映射），并落一条 warning
- *   · 列缺失 → 自动分类器兜底（与 v1 行为一致，向后兼容）
+ * - 数据库已有同内容行 → 直接跳过(不创建副本,不推到云端)
+ * - 同一份 Excel 内有重复行 → 第二次起也跳过(防 Excel 自身脏)
+ * - 跳过统计 `alreadyExistsCount` 显示给用户,知道为啥少了
+ *
+ * 这把"反复点导入会造重复"这个根因彻底封掉。
+ *
+ * 其它原则保留:
+ * 1. 表头自动识别(前 5 行内找含"金额/amount"的)
+ * 2. 列名宽松匹配(中英常见命名都识别)
+ * 3. 单位识别("欧"→EUR, "元"→CNY, "美元"→USD)
+ * 4. 防御式解析(单行错误不打断整批)
+ * 5. 两阶段提交(parse 出预览,UI 让用户确认,再 commit 落库)
+ * 6. xlsx 库通过 dynamic import(350KB 库不背首屏)
+ *
+ * 归类策略(承袭 v2):
+ * - 商家列(merchant)→ 进 participant 字段
+ * - 分类列(categoryName)→ 按分类名直接映射 category_id
+ *   · 命中(精确 / 大小写无关)→ 用这个 category_id,跳过自动分类
+ *   · 未命中 → 自动分类器兜底
+ *   · 列缺失 → 自动分类器兜底
  */
 
 import { v4 as uuid } from 'uuid'
@@ -30,25 +38,23 @@ import { classifyOne } from '@/lib/classifier'
 import { categoryRepo } from '@/repositories'
 
 export interface XlsxImportPreview {
-  /** 解析出的待导入流水,已是完整的 FinanceTransaction */
+  /** 解析出的待导入流水(已去过重),已是完整的 FinanceTransaction */
   transactions: FinanceTransaction[]
-  /** 跳过的行数(空行 / 无法识别的行)*/
+  /** 跳过的行数(空行/无法识别的行) */
   skippedRows: number
-  /** 非致命警告,例如"第 5 行单位无法识别,默认 EUR" */
+  /** 因为内容已存在(本地或本批)而被跳过的行数 —— 防重复导入的核心 */
+  alreadyExistsCount: number
+  /** 非致命警告 */
   warnings: string[]
-  /** 检测到的列映射 —— 让用户确认对得上 */
+  /** 检测到的列映射 */
   columnMap: ColumnMap
-  /** 表头所在行(1-based,给警告标号用)*/
+  /** 表头所在行(1-based) */
   headerRow: number
-  /** 这次导入按"分类列"匹配上的统计（让用户能看到效果）*/
+  /** 分类列匹配统计 */
   categoryMatchStats?: {
-    /** 通过分类列直接命中的行数 */
     matchedByName: number
-    /** 通过自动分类器兜底归类的行数 */
     matchedByClassifier: number
-    /** 仍是未分类的行数 */
     uncategorized: number
-    /** 分类列里出现过、但在系统里找不到的名字（最多 10 个，去重）*/
     unmatchedNames: string[]
   }
 }
@@ -59,9 +65,7 @@ interface ColumnMap {
   day?: number
   date?: number
   type?: number
-  /** 商家 / 交易对象 —— 进 participant 字段 */
   merchant?: number
-  /** 分类名 —— 按名直接映射到 category_id */
   categoryName?: number
   detail?: number
   amount?: number
@@ -69,23 +73,13 @@ interface ColumnMap {
   location?: number
 }
 
-/**
- * 表头别名。
- *
- * ⚠️ 注意"类别" vs "分类"在中文里语义重叠：
- * - 老模板（Annie 的旧 Excel）里"类别"列实际是商家名 → 归到 merchant
- * - 新模板里如果同时有"商家"和"分类"两列，分别归位
- * - "分类 / 类目 / category" 严格归到 categoryName（更具体的语义）
- */
 const HEADER_ALIASES: Record<keyof ColumnMap, string[]> = {
   year: ['年', 'year', 'yyyy'],
   month: ['月', 'month', 'mm'],
   day: ['日', 'day', 'dd'],
   date: ['日期', 'date', '时间', '发生时间', 'occurred_at'],
   type: ['类型', '支出/收入', '收支', 'type', '收支类型', '收/支'],
-  // 商家 —— 包含老模板里的"类别"（实际填的就是商家名）
   merchant: ['商家', '类别', 'merchant', 'store', '店铺', '对象', '交易对象'],
-  // 分类 —— 真正的分类名列
   categoryName: ['分类', '类目', 'category', '归类', '类别名'],
   detail: ['明细', '内容', '描述', '备注', 'detail', 'description', 'note', 'desc'],
   amount: ['金额', '价格', '数额', 'amount', 'price', 'value', '消费'],
@@ -93,42 +87,20 @@ const HEADER_ALIASES: Record<keyof ColumnMap, string[]> = {
   location: ['地点', '位置', '城市', 'location', 'city', 'place'],
 }
 
-/**
- * 检测列映射。优先匹配更具体的别名 —— 避免 "类别" 把 "分类" 抢走。
- *
- * 策略：
- * 1. 先精确匹配（s === alias）
- * 2. 再包含匹配（s.includes(alias)）
- * 3. 一个表头列只会被分配给一个字段（先到先得）
- */
 function detectColumns(headers: unknown[]): ColumnMap {
   const map: ColumnMap = {}
   const used = new Set<number>()
   const norm = headers.map((h) =>
     h === null || h === undefined ? '' : String(h).trim().toLowerCase(),
   )
-
-  // 阶段 1：精确匹配（优先 categoryName，再其他）
-  // 这里的字段顺序很关键：把语义更具体的字段排在前面，让它们先抢列
   const fields: Array<keyof ColumnMap> = [
-    'categoryName', // 优先：'分类' 应该归到这里，而不是被 merchant 的 '类别' 抢走
-    'merchant',
-    'date',
-    'year',
-    'month',
-    'day',
-    'type',
-    'detail',
-    'amount',
-    'currency',
-    'location',
+    'categoryName', 'merchant', 'date', 'year', 'month', 'day',
+    'type', 'detail', 'amount', 'currency', 'location',
   ]
 
   for (const field of fields) {
     const aliases = HEADER_ALIASES[field].map((a) => a.toLowerCase())
-    // 精确
     let idx = norm.findIndex((s, i) => !used.has(i) && s !== '' && aliases.includes(s))
-    // 包含（避开已用列）
     if (idx < 0) {
       idx = norm.findIndex(
         (s, i) => !used.has(i) && s !== '' && aliases.some((a) => s.includes(a)),
@@ -164,22 +136,14 @@ function parseType(raw: unknown): 'expense' | 'income' | 'transfer' | null {
   return null
 }
 
-/**
- * 找包含"金额"的行作为表头 —— 容忍前几行有标题、合计、空行等无关内容。
- */
 function findHeaderRow(rows: unknown[][]): number {
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
     const r = rows[i]
     if (!r) continue
-    const flat = r
-      .map((c) => String(c ?? '').toLowerCase())
-      .join(' ')
+    const flat = r.map((c) => String(c ?? '').toLowerCase()).join(' ')
     if (
       (flat.includes('金额') || flat.includes('amount')) &&
-      (flat.includes('类') ||
-        flat.includes('明细') ||
-        flat.includes('日') ||
-        flat.includes('date'))
+      (flat.includes('类') || flat.includes('明细') || flat.includes('日') || flat.includes('date'))
     ) {
       return i
     }
@@ -187,112 +151,78 @@ function findHeaderRow(rows: unknown[][]): number {
   return -1
 }
 
-/**
- * 解析 Excel 文件为预览 —— 不写库。让 UI 显示给用户确认。
- */
+/** 内容键 —— 跟 dedup-finance.ts 完全一致,确保两边判重逻辑统一 */
+function makeContentKey(occurredAt: string, amount: number, participant: string, note: string): string {
+  return `${occurredAt}|${amount.toFixed(2)}|${participant.trim()}|${note.trim()}`
+}
+
 export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview> {
-  // xlsx 350KB —— 只在真正导入时才下载,首屏不背锅
   const { read, utils } = await import('xlsx')
 
   const buf = await file.arrayBuffer()
   const wb = read(buf, { type: 'array' })
   const sheetName = wb.SheetNames[0]
   if (!sheetName) {
-    return {
-      transactions: [],
-      skippedRows: 0,
-      warnings: ['Excel 没有工作表'],
-      columnMap: {},
-      headerRow: 0,
-    }
+    return emptyPreview(['Excel 没有工作表'])
   }
   const sheet = wb.Sheets[sheetName]
-  if (!sheet) {
-    return {
-      transactions: [],
-      skippedRows: 0,
-      warnings: ['工作表为空'],
-      columnMap: {},
-      headerRow: 0,
-    }
-  }
+  if (!sheet) return emptyPreview(['工作表为空'])
 
   const rows = utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null })
 
   const headerRowIdx = findHeaderRow(rows)
   if (headerRowIdx < 0) {
-    return {
-      transactions: [],
-      skippedRows: 0,
-      warnings: ['未找到表头行(应至少包含"金额/amount"和"日期/类别/明细"中的一个)'],
-      columnMap: {},
-      headerRow: 0,
-    }
+    return emptyPreview([
+      '未找到表头行(应至少包含"金额/amount"和"日期/类别/明细"中的一个)',
+    ])
   }
 
   const headers = rows[headerRowIdx]
-  if (!headers) {
-    return {
-      transactions: [],
-      skippedRows: 0,
-      warnings: ['表头行为空'],
-      columnMap: {},
-      headerRow: 0,
-    }
-  }
+  if (!headers) return emptyPreview(['表头行为空'])
 
   const columnMap = detectColumns(headers)
 
   if (columnMap.amount === undefined) {
-    return {
-      transactions: [],
-      skippedRows: 0,
-      warnings: ['必须有"金额"列。检查表头中是否有"金额/价格/amount"字样。'],
+    return emptyPreview(
+      ['必须有"金额"列。检查表头中是否有"金额/价格/amount"字样。'],
       columnMap,
-      headerRow: headerRowIdx + 1,
-    }
+      headerRowIdx + 1,
+    )
   }
   if (
     columnMap.date === undefined &&
-    !(
-      columnMap.year !== undefined &&
-      columnMap.month !== undefined &&
-      columnMap.day !== undefined
-    )
+    !(columnMap.year !== undefined && columnMap.month !== undefined && columnMap.day !== undefined)
   ) {
-    return {
-      transactions: [],
-      skippedRows: 0,
-      warnings: ['必须有日期列(整列"日期"或拆开的"年/月/日")'],
+    return emptyPreview(
+      ['必须有日期列(整列"日期"或拆开的"年/月/日")'],
       columnMap,
-      headerRow: headerRowIdx + 1,
-    }
+      headerRowIdx + 1,
+    )
   }
 
   const dataRows = rows.slice(headerRowIdx + 1)
   const transactions: FinanceTransaction[] = []
   const warnings: string[] = []
   let skipped = 0
+  let alreadyExistsCount = 0
   const now = nowIso()
   const userId = getCurrentUserId()
   const deviceId = getDeviceId()
 
-  // 提前拿汇率和本位币 —— 每行交易都需要根据"该行币种"算 exchange_rate
   const baseCurrency = await getBaseCurrency()
   const rates = await getRates()
 
-  // 提前拿分类映射 —— 用于按名匹配 + 自动归类
+  // ── 取分类映射(分类列匹配 + 关键字兜底用)──
   const cats = await categoryRepo.listAll()
-  const expenseCatNameToId: Record<string, string> = {} // 关键字分类器用（仅 expense）
-  const allCatNameToId: Record<string, string> = {} // 直接按名匹配用（不限 type，更宽容）
-  const allCatNameToIdLower: Record<string, string> = {} // 同上但小写键
+  const expenseCatNameToId: Record<string, string> = {}
+  const allCatNameToId: Record<string, string> = {}
+  const allCatNameToIdLower: Record<string, string> = {}
   for (const c of cats) {
     if (c.deleted_at) continue
     if (c.kind === 'expense') expenseCatNameToId[c.name] = c.id
     allCatNameToId[c.name] = c.id
     allCatNameToIdLower[c.name.toLowerCase()] = c.id
   }
-  // 学习映射(已有交易里 participant→cat 的统计)
   const learnedMap: Record<string, string> = {}
   const seenTxs = await db.finance_transactions
     .filter((t) => !t.deleted_at && !!t.category_id && !!t.participant)
@@ -311,7 +241,21 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
     if (top && top[1] >= 2) learnedMap[p] = top[0]
   }
 
-  // 统计：让用户看到分类列效果
+  // ── ★★★ 内容查重的核心 ★★★ ──
+  // 取本地所有 alive 的流水,按内容键索引。导入时遇到同键直接跳。
+  // 同时维护一个 seenInBatch,防 Excel 自身有重复行被都收下。
+  const allExistingAlive = await db.finance_transactions
+    .filter((t) => !t.deleted_at)
+    .toArray()
+  const existingContentKeys = new Set<string>()
+  for (const t of allExistingAlive) {
+    existingContentKeys.add(
+      makeContentKey(t.occurred_at, t.amount, t.participant ?? '', t.note ?? ''),
+    )
+  }
+  const seenInBatch = new Set<string>()
+
+  // 分类列效果统计
   let matchedByName = 0
   let matchedByClassifier = 0
   let uncategorized = 0
@@ -319,15 +263,12 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
 
   dataRows.forEach((r, i) => {
     const lineNo = headerRowIdx + 2 + i
-    if (
-      !r ||
-      r.every((c) => c === null || c === undefined || String(c).trim() === '')
-    ) {
+    if (!r || r.every((c) => c === null || c === undefined || String(c).trim() === '')) {
       skipped++
       return
     }
 
-    // ── 日期 ─────────────────────────────────
+    // 日期
     let occurredAtIso: string | null = null
     if (
       columnMap.year !== undefined &&
@@ -344,12 +285,8 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
       const v = r[columnMap.date]
       if (v !== null && v !== undefined && v !== '') {
         try {
-          // Excel 序列号会被 SheetJS 自动转 Date,字符串也能解析
-          if (v instanceof Date) {
-            occurredAtIso = v.toISOString()
-          } else {
-            occurredAtIso = toIso(v as string | number)
-          }
+          if (v instanceof Date) occurredAtIso = v.toISOString()
+          else occurredAtIso = toIso(v as string | number)
         } catch {
           // skip
         }
@@ -361,7 +298,7 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
       return
     }
 
-    // ── 金额 ─────────────────────────────────
+    // 金额
     const rawAmount = r[columnMap.amount!]
     const amount = Math.abs(Number(rawAmount))
     if (!Number.isFinite(amount) || amount === 0) {
@@ -370,49 +307,51 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
       return
     }
 
-    // ── 类型 ─────────────────────────────────
+    // 类型
     let type: 'expense' | 'income' | 'transfer' = 'expense'
     if (columnMap.type !== undefined) {
       const parsed = parseType(r[columnMap.type])
       if (parsed) type = parsed
       else if (r[columnMap.type] !== null && r[columnMap.type] !== undefined) {
-        warnings.push(
-          `第 ${lineNo} 行:无法识别类型 "${r[columnMap.type]}",默认为支出`,
-        )
+        warnings.push(`第 ${lineNo} 行:无法识别类型 "${r[columnMap.type]}",默认为支出`)
       }
     }
 
-    // ── 货币 ─────────────────────────────────
+    // 货币
     const currency =
       columnMap.currency !== undefined ? parseCurrency(r[columnMap.currency]) : 'EUR'
     const exchange_rate = rateToBase(currency, baseCurrency, rates)
 
-    // ── 备注 = 明细 + 地点 ──────────────────
+    // 备注 = 明细 + 地点
     const detail =
-      columnMap.detail !== undefined
-        ? String(r[columnMap.detail] ?? '').trim()
-        : ''
+      columnMap.detail !== undefined ? String(r[columnMap.detail] ?? '').trim() : ''
     const location =
-      columnMap.location !== undefined
-        ? String(r[columnMap.location] ?? '').trim()
-        : ''
+      columnMap.location !== undefined ? String(r[columnMap.location] ?? '').trim() : ''
     const note = location ? `${detail}${detail ? ' · 在 ' : '在 '}${location}` : detail
 
-    // ── participant = 商家列 ────────────────
+    // 商家
     const participant =
-      columnMap.merchant !== undefined
-        ? String(r[columnMap.merchant] ?? '').trim()
-        : ''
+      columnMap.merchant !== undefined ? String(r[columnMap.merchant] ?? '').trim() : ''
 
-    // ── 分类 ─────────────────────────────────
-    // 策略：1) 分类列直接按名匹配 → 2) 关键字分类器兜底 → 3) null
+    // ★★★ 内容查重 —— 在做分类工作之前先短路,省力 ★★★
+    const contentKey = makeContentKey(occurredAtIso, amount, participant, note)
+    if (seenInBatch.has(contentKey)) {
+      alreadyExistsCount++
+      // Excel 内部重复,静默(不刷屏 warnings)
+      return
+    }
+    if (existingContentKeys.has(contentKey)) {
+      alreadyExistsCount++
+      return // 库里已有,跳过
+    }
+    seenInBatch.add(contentKey)
+
+    // 分类
     let category_id: string | null = null
     let matchedFromName = false
-
     if (columnMap.categoryName !== undefined) {
       const rawCatName = String(r[columnMap.categoryName] ?? '').trim()
       if (rawCatName) {
-        // 精确 → 不区分大小写
         const direct = allCatNameToId[rawCatName] ?? allCatNameToIdLower[rawCatName.toLowerCase()]
         if (direct) {
           category_id = direct
@@ -422,8 +361,6 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
         }
       }
     }
-
-    // 没命中分类列 → 走自动分类器（仅 expense；和 v1 行为一致）
     if (!matchedFromName && type === 'expense') {
       const classified = classifyOne(participant, note, learnedMap, expenseCatNameToId)
       if (classified) {
@@ -431,12 +368,8 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
         matchedByClassifier++
       }
     }
-
-    if (matchedFromName) {
-      matchedByName++
-    } else if (!category_id) {
-      uncategorized++
-    }
+    if (matchedFromName) matchedByName++
+    else if (!category_id) uncategorized++
 
     transactions.push({
       id: uuid(),
@@ -461,17 +394,17 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
     })
   })
 
-  // 把未匹配的分类名收集到 warnings 里（每个最多说一次，限 10 个）
   const unmatchedNames = Array.from(unmatchedNamesSet).slice(0, 10)
   if (unmatchedNames.length > 0) {
     warnings.push(
-      `分类列里有 ${unmatchedNamesSet.size} 个名字找不到对应分类（已用关键字兜底归类）：${unmatchedNames.join('、')}${unmatchedNamesSet.size > 10 ? ' …' : ''}`,
+      `分类列里有 ${unmatchedNamesSet.size} 个名字找不到对应分类(已用关键字兜底归类):${unmatchedNames.join('、')}${unmatchedNamesSet.size > 10 ? ' …' : ''}`,
     )
   }
 
   return {
     transactions,
     skippedRows: skipped,
+    alreadyExistsCount,
     warnings,
     columnMap,
     headerRow: headerRowIdx + 1,
@@ -484,10 +417,21 @@ export async function parseXlsxToFinance(file: File): Promise<XlsxImportPreview>
   }
 }
 
-/**
- * 把预览的流水批量写入 IndexedDB。
- * 不去重 —— 同一份文件多次导入会重复。让用户自己决定要不要重复点。
- */
+function emptyPreview(
+  warnings: string[],
+  columnMap: ColumnMap = {},
+  headerRow = 0,
+): XlsxImportPreview {
+  return {
+    transactions: [],
+    skippedRows: 0,
+    alreadyExistsCount: 0,
+    warnings,
+    columnMap,
+    headerRow,
+  }
+}
+
 export async function commitXlsxImport(
   transactions: FinanceTransaction[],
 ): Promise<number> {
@@ -497,10 +441,6 @@ export async function commitXlsxImport(
   return transactions.length
 }
 
-/**
- * 清空所有记账数据 —— 给"重新导入"做后悔药。
- * 注意:这是物理删除,不会同步删除信号到云端;Phase 3 后会变成软删 + 同步。
- */
 export async function clearAllFinanceData(): Promise<number> {
   const count = await db.finance_transactions.count()
   await db.finance_transactions.clear()

@@ -41,6 +41,7 @@ export function XlsxImporter() {
       setPreview({
         transactions: [],
         skippedRows: 0,
+        alreadyExistsCount: 0,
         warnings: [(e as Error).message],
         columnMap: {},
         headerRow: 0,
@@ -182,6 +183,31 @@ export function XlsxImporter() {
                 }
               />
               <Stat label="支出合计" value={`€ ${totalAmount.toFixed(2)}`} />
+            </div>
+          )}
+
+          {/* 内容查重 —— 防重复导入的核心提示 */}
+          {preview.alreadyExistsCount > 0 && (
+            <div
+              className="rounded-xl p-3 text-xs"
+              style={{
+                background: 'var(--bn-glass)',
+                border: '0.5px solid var(--bn-accent)',
+              }}
+            >
+              <p style={{ color: 'var(--bn-text-primary)' }}>
+                <span className="bn-mono" style={{ fontWeight: 600 }}>
+                  {preview.alreadyExistsCount}
+                </span>{' '}
+                条内容已存在(本地或本批中重复),
+                <strong>跳过</strong>。
+              </p>
+              <p
+                className="mt-1 leading-relaxed"
+                style={{ color: 'var(--bn-text-tertiary)' }}
+              >
+                判重键:发生日期 + 金额 + 商家 + 备注。同一份 Excel 反复导入也不会再造副本。
+              </p>
             </div>
           )}
 
