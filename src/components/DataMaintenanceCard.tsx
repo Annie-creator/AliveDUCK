@@ -11,28 +11,40 @@ import {
   dedupSettings,
   type SettingsDedupReport,
 } from '@/lib/dedup-settings'
+import {
+  countDuplicateFinance,
+  dedupFinance,
+  type FinanceDedupReport,
+} from '@/lib/dedup-finance'
 
 /**
- * 数据维护卡片。
+ * 数据维护卡片(2026-05 三合一版)。
  *
- * 启动时同时检测两类历史脏数据:
- *   1. 同名分类重复(早期 race condition 留下,首次 pull 与 ensureDefaults 撞 UUID)
- *   2. 同 (user_id, key) 的 settings 重复(setValue 不原子 + promoteGuestData 撞云端)
+ * 启动时同时检测三类历史脏数据:
+ *   1. settings 重复(阻断同步,优先级最高)
+ *   2. 流水重复(同一份 Excel 反复导入造成)
+ *   3. 分类重复(早期 race condition 留下的)
  *
- * 第 (2) 个会让 sync 一直推不上去 —— Supabase 那边 `(user_id, key)` 是唯一约束。
- *
- * 没重复就完全不显示这张卡片。
+ * 没重复完全不显示。
  */
 export function DataMaintenanceCard() {
   const [catDups, setCatDups] = useState<number | null>(null)
   const [settingDups, setSettingDups] = useState<number | null>(null)
-  const [busyKind, setBusyKind] = useState<'cat' | 'setting' | null>(null)
+  const [finDups, setFinDups] = useState<number | null>(null)
+
+  const [busyKind, setBusyKind] = useState<'cat' | 'setting' | 'fin' | null>(null)
   const [catReport, setCatReport] = useState<DedupReport | null>(null)
   const [settingReport, setSettingReport] = useState<SettingsDedupReport | null>(null)
+  const [finReport, setFinReport] = useState<FinanceDedupReport | null>(null)
+
+  async function refreshCounts() {
+    setCatDups(await countDuplicateCategories())
+    setSettingDups(await countDuplicateSettings())
+    setFinDups(await countDuplicateFinance())
+  }
 
   useEffect(() => {
-    void countDuplicateCategories().then(setCatDups)
-    void countDuplicateSettings().then(setSettingDups)
+    void refreshCounts()
   }, [])
 
   async function handleDedupCats() {
@@ -44,7 +56,7 @@ export function DataMaintenanceCard() {
     try {
       const r = await dedupCategories()
       setCatReport(r)
-      setCatDups(await countDuplicateCategories())
+      await refreshCounts()
     } finally {
       setBusyKind(null)
     }
@@ -61,17 +73,41 @@ export function DataMaintenanceCard() {
     try {
       const r = await dedupSettings()
       setSettingReport(r)
-      setSettingDups(await countDuplicateSettings())
+      await refreshCounts()
     } finally {
       setBusyKind(null)
     }
   }
 
-  // 没有任何重复 + 没有任何已清理报告 → 卡片不显示
-  if (catDups === null || settingDups === null) return null
-  if (catDups === 0 && settingDups === 0 && !catReport && !settingReport) return null
+  async function handleDedupFinance() {
+    if (
+      !confirm(
+        '将按 (日期+金额+商家+备注) 合并完全相同的流水。同一笔的多个副本会被软删,只保留一条。这种重复一般来自重复导入 Excel。继续?',
+      )
+    )
+      return
+    setBusyKind('fin')
+    try {
+      const r = await dedupFinance()
+      setFinReport(r)
+      await refreshCounts()
+    } finally {
+      setBusyKind(null)
+    }
+  }
 
-  const hasIssue = catDups > 0 || settingDups > 0
+  if (catDups === null || settingDups === null || finDups === null) return null
+  if (
+    catDups === 0 &&
+    settingDups === 0 &&
+    finDups === 0 &&
+    !catReport &&
+    !settingReport &&
+    !finReport
+  )
+    return null
+
+  const hasIssue = catDups > 0 || settingDups > 0 || finDups > 0
 
   return (
     <GlassPanel
@@ -85,88 +121,132 @@ export function DataMaintenanceCard() {
         数据维护
       </h2>
 
-      {/* —— Settings 重复(更优先,因为它阻断同步) —— */}
+      {/* —— 1) Settings 重复(优先级最高,阻断同步) —— */}
       {settingDups > 0 && (
-        <div className={catDups > 0 || catReport ? 'mb-4' : ''}>
+        <Block hasFollowing={catDups > 0 || finDups > 0 || !!catReport || !!finReport}>
           <p className="mb-3 text-xs leading-relaxed" style={{ color: 'var(--bn-text-secondary)' }}>
             检测到{' '}
             <span className="bn-mono" style={{ color: 'var(--bn-negative)' }}>
               {settingDups}
             </span>{' '}
-            条重复 settings —— Supabase 上 (user_id, key) 有唯一约束,本地这堆重复会让
-            <strong style={{ color: 'var(--bn-text-primary)' }}>同步一直失败</strong>
-            。点下面合并,修完同步就通了。
+            条重复 settings —— 这会让<strong style={{ color: 'var(--bn-text-primary)' }}>同步一直失败</strong>。先点这个,通了之后再处理别的。
           </p>
           <Button onClick={handleDedupSettings} disabled={busyKind !== null}>
             {busyKind === 'setting' ? '清理中…' : `合并 ${settingDups} 条重复 settings`}
           </Button>
-        </div>
+        </Block>
       )}
 
       {settingReport && (
-        <div
-          className={`rounded-xl p-3 text-xs ${settingDups > 0 || catDups > 0 || catReport ? 'mb-4' : 'mt-3'}`}
-          style={{
-            background: 'var(--bn-glass)',
-            border: '0.5px solid var(--bn-glass-border)',
-          }}
-        >
-          <p className="mb-1 font-medium" style={{ color: 'var(--bn-positive)' }}>
-            ✓ Settings 已清理
-          </p>
-          <ul className="space-y-0.5" style={{ color: 'var(--bn-text-secondary)' }}>
+        <Report tone="positive" title="✓ Settings 已清理">
+          <li>· 合并了 {settingReport.groupsFound} 组(共 {settingReport.duplicatesRemoved} 条软删)</li>
+          {settingReport.affectedKeys.length > 0 && (
             <li>
-              · 合并了 {settingReport.groupsFound} 组重复(共 {settingReport.duplicatesRemoved} 条软删)
+              · 涉及 key:
+              <span className="bn-mono ml-1">
+                {settingReport.affectedKeys.slice(0, 6).join(', ')}
+                {settingReport.affectedKeys.length > 6 ? ' …' : ''}
+              </span>
             </li>
-            {settingReport.affectedKeys.length > 0 && (
-              <li>
-                · 涉及 key:
-                <span className="bn-mono ml-1">
-                  {settingReport.affectedKeys.slice(0, 6).join(', ')}
-                  {settingReport.affectedKeys.length > 6 ? ' …' : ''}
-                </span>
-              </li>
-            )}
-          </ul>
-        </div>
+          )}
+        </Report>
       )}
 
-      {/* —— Categories 重复 —— */}
+      {/* —— 2) 流水重复(导入造成的脏数据) —— */}
+      {finDups > 0 && (
+        <Block hasFollowing={catDups > 0 || !!catReport}>
+          <p className="mb-3 text-xs leading-relaxed" style={{ color: 'var(--bn-text-secondary)' }}>
+            检测到{' '}
+            <span className="bn-mono" style={{ color: 'var(--bn-negative)' }}>
+              {finDups}
+            </span>{' '}
+            条重复流水(同一笔被导入多次)。按 <span className="bn-mono">日期+金额+商家+备注</span> 判重,每组保留 1 条,其余软删。
+          </p>
+          <Button onClick={handleDedupFinance} disabled={busyKind !== null}>
+            {busyKind === 'fin' ? '清理中…' : `合并 ${finDups} 条重复流水`}
+          </Button>
+        </Block>
+      )}
+
+      {finReport && (
+        <Report tone="positive" title="✓ 流水已清理">
+          <li>· 合并了 {finReport.groupsFound} 组(共 {finReport.duplicatesRemoved} 条软删)</li>
+          {finReport.affectedSamples.length > 0 && (
+            <>
+              <li>· 样本:</li>
+              {finReport.affectedSamples.map((s, i) => (
+                <li key={i} className="bn-mono pl-3" style={{ fontSize: 10 }}>
+                  · {s}
+                </li>
+              ))}
+            </>
+          )}
+        </Report>
+      )}
+
+      {/* —— 3) 分类重复 —— */}
       {catDups > 0 && (
-        <div>
+        <Block>
           <p className="mb-3 text-xs leading-relaxed" style={{ color: 'var(--bn-text-secondary)' }}>
             检测到{' '}
             <span className="bn-mono" style={{ color: 'var(--bn-negative)' }}>
               {catDups}
             </span>{' '}
-            条重复分类。早期版本 race condition 留下的脏数据,合并保留最早的那条,流水会重新指向它,不丢任何数据。
+            条重复分类。早期 race condition 留下的,合并后流水会自动重新指向,不丢任何数据。
           </p>
           <Button onClick={handleDedupCats} disabled={busyKind !== null}>
             {busyKind === 'cat' ? '清理中…' : `合并 ${catDups} 条重复分类`}
           </Button>
-        </div>
+        </Block>
       )}
 
       {catReport && (
-        <div
-          className="mt-3 rounded-xl p-3 text-xs"
-          style={{
-            background: 'var(--bn-glass)',
-            border: '0.5px solid var(--bn-glass-border)',
-          }}
-        >
-          <p className="mb-1 font-medium" style={{ color: 'var(--bn-positive)' }}>
-            ✓ 分类已清理
-          </p>
-          <ul className="space-y-0.5" style={{ color: 'var(--bn-text-secondary)' }}>
-            <li>
-              · 合并了 {catReport.groupsFound} 组重复(共 {catReport.duplicatesRemoved} 条软删)
-            </li>
-            <li>· {catReport.transactionsRepointed} 条流水重新指向</li>
-            <li>· {catReport.budgetsRepointed} 条预算重新指向</li>
-          </ul>
-        </div>
+        <Report tone="positive" title="✓ 分类已清理">
+          <li>· 合并了 {catReport.groupsFound} 组(共 {catReport.duplicatesRemoved} 条软删)</li>
+          <li>· {catReport.transactionsRepointed} 条流水重新指向</li>
+          <li>· {catReport.budgetsRepointed} 条预算重新指向</li>
+        </Report>
       )}
     </GlassPanel>
+  )
+}
+
+function Block({
+  children,
+  hasFollowing,
+}: {
+  children: React.ReactNode
+  hasFollowing?: boolean
+}) {
+  return <div className={hasFollowing ? 'mb-4' : ''}>{children}</div>
+}
+
+function Report({
+  title,
+  tone,
+  children,
+}: {
+  title: string
+  tone: 'positive' | 'neutral'
+  children: React.ReactNode
+}) {
+  return (
+    <div
+      className="mt-3 rounded-xl p-3 text-xs"
+      style={{
+        background: 'var(--bn-glass)',
+        border: '0.5px solid var(--bn-glass-border)',
+      }}
+    >
+      <p
+        className="mb-1 font-medium"
+        style={{ color: tone === 'positive' ? 'var(--bn-positive)' : 'var(--bn-text-primary)' }}
+      >
+        {title}
+      </p>
+      <ul className="space-y-0.5" style={{ color: 'var(--bn-text-secondary)' }}>
+        {children}
+      </ul>
+    </div>
   )
 }
