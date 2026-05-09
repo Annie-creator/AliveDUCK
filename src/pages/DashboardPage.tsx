@@ -1,5 +1,6 @@
 import { GlassPanel } from '@/components/ui/GlassPanel'
 import { DataMaintenanceCard } from '@/components/DataMaintenanceCard'
+import { DiagnosticsCard } from '@/components/DiagnosticsCard'
 import { GreetingCard } from '@/components/onboarding/GreetingCard'
 import { BaduanjinCard } from '@/components/onboarding/BaduanjinCard'
 
@@ -14,6 +15,9 @@ export function DashboardPage() {
 
       {/* 检测到脏数据时才显示;干净就完全隐身 */}
       <DataMaintenanceCard />
+
+      {/* 同步诊断卡 —— 永远显示,排查多设备同步问题用 */}
+      <DiagnosticsCard />
 
       <GlassPanel padding="lg" radius="lg">
         <h2
