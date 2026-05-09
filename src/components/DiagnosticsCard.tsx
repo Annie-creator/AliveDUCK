@@ -1,30 +1,44 @@
 import { useEffect, useState } from 'react'
-import { Copy, Check, RefreshCw } from 'lucide-react'
+import { Copy, Check, RefreshCw, Cloud } from 'lucide-react'
 import { db } from '@/db'
 import { GlassPanel } from '@/components/ui/GlassPanel'
 import { Button } from '@/components/ui/Button'
 import { syncEngine, type SyncEngineState } from '@/lib/sync-engine'
-import { getCurrentUserId, GUEST_USER_ID } from '@/lib/current-user'
+import { getCurrentUserId, GUEST_USER_ID, setCurrentUserId } from '@/lib/current-user'
 import { getDeviceId } from '@/lib/device'
+import { supabase } from '@/lib/supabase'
 
 /**
- * 同步诊断卡。
+ * 同步诊断卡 v2(2026-05)。
  *
- * 给 iOS / Android 这种没法接 console 的设备用。
- * 把所有排查同步问题需要看的数字一次性显示出来,带「复制全部」按钮 ——
- * 用户可以直接把诊断 dump 粘贴到任何对话里。
+ * v1 拿不到真实状态时只能瞎猜。v2 加了 2 个直连 Supabase 的探针:
  *
- * 不依赖任何 patch(直接 Dexie 查询 + 内联重复检测),即使老版本也能用。
+ *   1. **本地认知 vs 服务器认知对比**:同时显示
+ *      - getCurrentUserId() —— 本地缓存的 uid(同步引擎用这个判推什么)
+ *      - supabase.auth.getSession() —— 真实会话状态
+ *      两者应当一致;不一致就说明 setCurrentUserId 没被调对/没及时调到
+ *
+ *   2. **云端 finance_transactions 行数**:用户点 [查云端] 时直接 SQL count
+ *      绕过本地 IndexedDB,告诉用户"云端真实有多少行" —— 排查
+ *      "本地 808 vs 电脑 101"这种迷思最快的办法
  */
 
 interface DiagnosticsReport {
   capturedAt: string
   // 配置
   supabaseHost: string
-  userId: string
-  isLoggedIn: boolean
+  supabaseConfigured: boolean
+  // 本地认知
+  localUserId: string
+  localIsLoggedIn: boolean
   deviceId: string
   appUrl: string
+  // 服务器认知(直连 supabase.auth.getSession())
+  serverUserId: string | null
+  serverEmail: string | null
+  serverError: string | null
+  // 不一致警告
+  authMismatch: boolean
   // 同步状态
   syncStatus: SyncEngineState['status']
   pendingCount: number
@@ -44,7 +58,7 @@ interface DiagnosticsReport {
     settings: number
     categories: number
     finance: number
-    financeSamples: string[] // 前几个重复样本(occurred_at + amount + participant)
+    financeSamples: string[]
   }
 }
 
@@ -71,6 +85,11 @@ export function DiagnosticsCard() {
   const [loading, setLoading] = useState(false)
   const [copied, setCopied] = useState(false)
 
+  // 云端 finance count(独立按钮触发,不每次刷新都打)
+  const [cloudFinCount, setCloudFinCount] = useState<number | null>(null)
+  const [cloudFinError, setCloudFinError] = useState<string | null>(null)
+  const [cloudFinLoading, setCloudFinLoading] = useState(false)
+
   async function refresh() {
     setLoading(true)
     try {
@@ -86,13 +105,12 @@ export function DiagnosticsCard() {
 
   async function copyAll() {
     if (!report) return
-    const text = formatAsText(report)
+    const text = formatAsText(report, cloudFinCount, cloudFinError)
     try {
       await navigator.clipboard.writeText(text)
       setCopied(true)
       setTimeout(() => setCopied(false), 2500)
     } catch {
-      // iOS 在 http 下 clipboard 会拒,fallback 用旧的 textarea + execCommand
       const ta = document.createElement('textarea')
       ta.value = text
       ta.style.position = 'fixed'
@@ -104,12 +122,45 @@ export function DiagnosticsCard() {
         setCopied(true)
         setTimeout(() => setCopied(false), 2500)
       } catch {
-        // 都失败的话给用户看个 prompt 自己复制
         prompt('复制下面的文本:', text)
       } finally {
         document.body.removeChild(ta)
       }
     }
+  }
+
+  /** 直连 Supabase 拿 finance_transactions 真实行数 —— 用 RLS scoped 的 count */
+  async function fetchCloudFinanceCount() {
+    if (!supabase) {
+      setCloudFinError('Supabase 未配置')
+      return
+    }
+    setCloudFinLoading(true)
+    setCloudFinError(null)
+    try {
+      // count='exact' 让 PostgREST 算精确行数,不返回行内容
+      const { count, error } = await supabase
+        .from('finance_transactions')
+        .select('*', { count: 'exact', head: true })
+      if (error) {
+        setCloudFinError(error.message)
+        setCloudFinCount(null)
+      } else {
+        setCloudFinCount(count ?? 0)
+      }
+    } catch (e) {
+      setCloudFinError((e as Error).message)
+    } finally {
+      setCloudFinLoading(false)
+    }
+  }
+
+  /** 强制把当前 supabase 会话的 uid 写到本地缓存 —— 修 auth mismatch 时用 */
+  async function forceResyncAuth() {
+    if (!supabase) return
+    const { data } = await supabase.auth.getSession()
+    setCurrentUserId(data.session?.user.id ?? null)
+    await refresh()
   }
 
   if (!report) {
@@ -123,7 +174,8 @@ export function DiagnosticsCard() {
   }
 
   const hasIssue =
-    !report.isLoggedIn ||
+    !report.localIsLoggedIn ||
+    report.authMismatch ||
     report.errorMessage !== null ||
     report.dups.settings > 0 ||
     report.dups.categories > 0 ||
@@ -175,33 +227,109 @@ export function DiagnosticsCard() {
         className="mb-4 text-xs leading-relaxed"
         style={{ color: 'var(--bn-text-tertiary)' }}
       >
-        排查同步问题用。点「复制全部」会复制一份纯文本诊断,直接粘到对话里给我看就行。
+        排查同步问题用。点「复制全部」会把所有信息(含云端探针)打成一段文本。
       </p>
 
+      {/* —— Auth 不一致警告 —— */}
+      {report.authMismatch && (
+        <div
+          className="mb-4 rounded-xl p-3"
+          style={{
+            background: 'rgba(220, 80, 60, 0.08)',
+            border: '0.5px solid rgba(220, 80, 60, 0.4)',
+          }}
+        >
+          <p className="mb-1.5 text-xs font-medium" style={{ color: 'var(--bn-negative)' }}>
+            ⚠️ 本地认知和服务器认知不一致
+          </p>
+          <p className="mb-2 text-xs leading-relaxed" style={{ color: 'var(--bn-text-secondary)' }}>
+            UI 显示已登录(server uid 存在),但同步引擎用的本地 uid 还是 guest_local。
+            点下面这个钮强制同步一次 —— 把真实 uid 写进同步引擎的内存。
+          </p>
+          <Button onClick={() => void forceResyncAuth()} variant="glass">
+            🔧 强制同步 auth 状态
+          </Button>
+        </div>
+      )}
+
       {/* —— 同步配置 —— */}
-      <Section title="同步配置">
+      <Section title="同步配置 / 认证">
         <Row k="Supabase">
           <span className="bn-mono break-all" style={{ fontSize: 11 }}>
             {report.supabaseHost || '⚠️ 未配置'}
           </span>
         </Row>
-        <Row k="登录状态">
-          {report.isLoggedIn ? (
-            <span style={{ color: 'var(--bn-positive)' }}>✓ 已登录</span>
-          ) : (
-            <span style={{ color: 'var(--bn-negative)' }}>⚠️ 未登录(游客模式)</span>
-          )}
-        </Row>
-        <Row k="User ID">
+        <Row k="本地认知 uid">
           <span className="bn-mono break-all" style={{ fontSize: 10 }}>
-            {report.userId}
+            {report.localUserId === GUEST_USER_ID ? (
+              <span style={{ color: 'var(--bn-negative)' }}>guest_local</span>
+            ) : (
+              report.localUserId
+            )}
           </span>
         </Row>
+        <Row k="服务器认知 uid">
+          {report.serverError ? (
+            <span style={{ color: 'var(--bn-negative)', fontSize: 11 }}>
+              ✗ {report.serverError}
+            </span>
+          ) : report.serverUserId ? (
+            <span className="bn-mono break-all" style={{ fontSize: 10, color: 'var(--bn-positive)' }}>
+              ✓ {report.serverUserId}
+            </span>
+          ) : (
+            <span style={{ color: 'var(--bn-text-tertiary)', fontSize: 11 }}>
+              (无 session)
+            </span>
+          )}
+        </Row>
+        {report.serverEmail && (
+          <Row k="登录邮箱">
+            <span className="break-all" style={{ fontSize: 11 }}>
+              {report.serverEmail}
+            </span>
+          </Row>
+        )}
         <Row k="Device ID">
           <span className="bn-mono break-all" style={{ fontSize: 10 }}>
             {report.deviceId}
           </span>
         </Row>
+      </Section>
+
+      {/* —— 云端探针 —— */}
+      <Section title="云端探针(直连 Supabase)">
+        <div className="rounded-xl p-3" style={{ background: 'var(--bn-glass)', border: '0.5px solid var(--bn-glass-border)' }}>
+          <div className="flex items-center justify-between gap-2">
+            <span style={{ fontSize: 12, color: 'var(--bn-text-secondary)' }}>
+              云端 finance_transactions 行数
+            </span>
+            <Button
+              onClick={() => void fetchCloudFinanceCount()}
+              disabled={cloudFinLoading || !report.supabaseConfigured}
+              variant="glass"
+            >
+              <Cloud size={12} strokeWidth={2} style={{ marginRight: 4, verticalAlign: -1 }} />
+              {cloudFinLoading ? '查询中…' : '查云端'}
+            </Button>
+          </div>
+          {cloudFinCount !== null && (
+            <p className="mt-2 text-sm">
+              <span className="bn-mono" style={{ color: 'var(--bn-text-primary)', fontWeight: 600, fontSize: 16 }}>
+                {cloudFinCount}
+              </span>{' '}
+              <span style={{ color: 'var(--bn-text-tertiary)' }}>行(包括所有 deleted_at 不为 null 的软删行)</span>
+            </p>
+          )}
+          {cloudFinError && (
+            <p className="bn-mono mt-2 break-all text-xs" style={{ color: 'var(--bn-negative)' }}>
+              ✗ {cloudFinError}
+            </p>
+          )}
+        </div>
+        <p className="mt-1.5 text-[10px] leading-relaxed" style={{ color: 'var(--bn-text-tertiary)' }}>
+          这个数字直接 SQL count 云端表,绕过本地。和本地"活+删"对比,差距越大越说明同步状态有问题。
+        </p>
       </Section>
 
       {/* —— 同步状态 —— */}
@@ -213,11 +341,12 @@ export function DiagnosticsCard() {
           <span
             className="bn-mono"
             style={{
-              color: report.pendingCount > 50
-                ? 'var(--bn-negative)'
-                : report.pendingCount > 0
-                  ? '#E0A75F'
-                  : 'var(--bn-text-primary)',
+              color:
+                report.pendingCount > 50
+                  ? 'var(--bn-negative)'
+                  : report.pendingCount > 0
+                    ? '#E0A75F'
+                    : 'var(--bn-text-primary)',
               fontWeight: report.pendingCount > 0 ? 600 : 400,
             }}
           >
@@ -253,7 +382,7 @@ export function DiagnosticsCard() {
       </Section>
 
       {/* —— 各表数据量 —— */}
-      <Section title="数据量">
+      <Section title="本地数据量">
         <div
           className="overflow-hidden rounded-lg"
           style={{ border: '0.5px solid var(--bn-glass-border)' }}
@@ -318,13 +447,6 @@ export function DiagnosticsCard() {
             </tbody>
           </table>
         </div>
-        <p
-          className="mt-1.5 text-[10px] leading-relaxed"
-          style={{ color: 'var(--bn-text-tertiary)' }}
-        >
-          guest 列 = user_id 是 guest_local 的行(没绑账号,登录时会被收编)。
-          如果非零且你已登录,八成是 promoteGuestData 没跑或时机不对。
-        </p>
       </Section>
 
       {/* —— 重复检测 —— */}
@@ -346,10 +468,7 @@ export function DiagnosticsCard() {
               border: '0.5px solid var(--bn-glass-border)',
             }}
           >
-            <p
-              className="mb-1"
-              style={{ fontSize: 10, color: 'var(--bn-text-tertiary)' }}
-            >
+            <p className="mb-1" style={{ fontSize: 10, color: 'var(--bn-text-tertiary)' }}>
               重复样本(前 {report.dups.financeSamples.length} 条)
             </p>
             {report.dups.financeSamples.map((s, i) => (
@@ -363,12 +482,6 @@ export function DiagnosticsCard() {
             ))}
           </div>
         )}
-        <p
-          className="mt-1.5 text-[10px] leading-relaxed"
-          style={{ color: 'var(--bn-text-tertiary)' }}
-        >
-          流水按 (发生时间 + 金额 + 商家 + 备注) 判重 —— 完全一样就算重复。
-        </p>
       </Section>
     </GlassPanel>
   )
@@ -383,8 +496,30 @@ async function collectDiagnostics(): Promise<DiagnosticsReport> {
     ? supabaseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
     : ''
 
-  const userId = getCurrentUserId()
-  const isLoggedIn = userId !== GUEST_USER_ID
+  const localUserId = getCurrentUserId()
+  const localIsLoggedIn = localUserId !== GUEST_USER_ID
+  const supabaseConfigured = supabase !== null
+
+  // —— 直连 supabase 拿真实 session ——
+  let serverUserId: string | null = null
+  let serverEmail: string | null = null
+  let serverError: string | null = null
+  if (supabase) {
+    try {
+      const { data, error } = await supabase.auth.getSession()
+      if (error) {
+        serverError = error.message
+      } else if (data.session?.user) {
+        serverUserId = data.session.user.id
+        serverEmail = data.session.user.email ?? null
+      }
+    } catch (e) {
+      serverError = (e as Error).message
+    }
+  }
+
+  const authMismatch =
+    serverUserId !== null && localUserId !== serverUserId
 
   const syncState = syncEngine.getState()
 
@@ -413,13 +548,11 @@ async function collectDiagnostics(): Promise<DiagnosticsReport> {
       }
       tables.push({ name, alive, deleted, pending, synced, guestLocal })
     } catch {
-      // 某张表读不出就跳
+      // 跳过读不出的表
     }
   }
 
-  // ── 重复检测(内联,不依赖 dedup-* 模块) ──
-
-  // settings: (user_id, key) 同组 > 1
+  // 重复检测
   const allSettings = await db.settings.filter((s) => !s.deleted_at).toArray()
   const sGroups = new Map<string, number>()
   for (const s of allSettings) {
@@ -431,7 +564,6 @@ async function collectDiagnostics(): Promise<DiagnosticsReport> {
     if (c > 1) settingsDups += c - 1
   }
 
-  // categories: (user_id, kind, name) 同组 > 1
   const allCats = await db.categories.filter((c) => !c.deleted_at).toArray()
   const cGroups = new Map<string, number>()
   for (const c of allCats) {
@@ -443,10 +575,7 @@ async function collectDiagnostics(): Promise<DiagnosticsReport> {
     if (v > 1) catDups += v - 1
   }
 
-  // finance: 按 (occurred_at, amount, participant, note) 判重
-  const allFin = await db.finance_transactions
-    .filter((t) => !t.deleted_at)
-    .toArray()
+  const allFin = await db.finance_transactions.filter((t) => !t.deleted_at).toArray()
   const fSeen = new Map<string, string>()
   let finDups = 0
   const samples: string[] = []
@@ -468,10 +597,15 @@ async function collectDiagnostics(): Promise<DiagnosticsReport> {
   return {
     capturedAt: new Date().toISOString(),
     supabaseHost,
-    userId,
-    isLoggedIn,
+    supabaseConfigured,
+    localUserId,
+    localIsLoggedIn,
     deviceId: getDeviceId(),
     appUrl: window.location.origin + window.location.pathname,
+    serverUserId,
+    serverEmail,
+    serverError,
+    authMismatch,
     syncStatus: syncState.status,
     pendingCount: syncState.pendingCount,
     lastSyncedAt: syncState.lastSyncedAt,
@@ -488,17 +622,34 @@ async function collectDiagnostics(): Promise<DiagnosticsReport> {
 
 /* ─── 文本格式化 ─────────────────────────────────────── */
 
-function formatAsText(r: DiagnosticsReport): string {
+function formatAsText(
+  r: DiagnosticsReport,
+  cloudFinCount: number | null,
+  cloudFinError: string | null,
+): string {
   const lines: string[] = []
-  lines.push('【BANYA-ALIVE 同步诊断】')
+  lines.push('【BANYA-ALIVE 同步诊断 v2】')
   lines.push(`时间: ${new Date(r.capturedAt).toLocaleString('zh-CN')}`)
   lines.push(`URL: ${r.appUrl}`)
   lines.push('')
-  lines.push('▌同步配置')
+  lines.push('▌认证')
   lines.push(`  Supabase: ${r.supabaseHost || '⚠️ 未配置'}`)
-  lines.push(`  登录: ${r.isLoggedIn ? '✓ 已登录' : '⚠️ 未登录(guest)'}`)
-  lines.push(`  User ID: ${r.userId}`)
-  lines.push(`  Device:  ${r.deviceId}`)
+  lines.push(`  本地 uid:  ${r.localUserId}`)
+  lines.push(
+    `  服务器 uid: ${r.serverError ? '✗ ' + r.serverError : (r.serverUserId ?? '(无 session)')}`,
+  )
+  if (r.serverEmail) lines.push(`  邮箱:      ${r.serverEmail}`)
+  lines.push(`  Device:    ${r.deviceId}`)
+  if (r.authMismatch) lines.push('  ⚠️ 本地认知 ≠ 服务器认知!')
+  lines.push('')
+  lines.push('▌云端探针(直连 SQL)')
+  if (cloudFinCount !== null) {
+    lines.push(`  finance_transactions 行数: ${cloudFinCount}`)
+  } else if (cloudFinError) {
+    lines.push(`  ✗ ${cloudFinError}`)
+  } else {
+    lines.push('  (未点查云端按钮)')
+  }
   lines.push('')
   lines.push('▌同步状态')
   lines.push(`  状态: ${r.syncStatus}`)
@@ -508,7 +659,7 @@ function formatAsText(r: DiagnosticsReport): string {
   )
   if (r.errorMessage) lines.push(`  错误: ${r.errorMessage}`)
   lines.push('')
-  lines.push('▌数据量(活/删/待推/guest)')
+  lines.push('▌本地数据量(活/删/待推/guest)')
   for (const t of r.tables) {
     if (t.alive === 0 && t.deleted === 0 && t.pending === 0 && t.guestLocal === 0) continue
     lines.push(`  ${t.name.padEnd(22)} ${t.alive}/${t.deleted}/${t.pending}/${t.guestLocal}`)
@@ -519,7 +670,7 @@ function formatAsText(r: DiagnosticsReport): string {
   lines.push(`  分类重复:      ${r.dups.categories}`)
   lines.push(`  流水重复:      ${r.dups.finance}`)
   if (r.dups.financeSamples.length > 0) {
-    lines.push('  流水重复样本:')
+    lines.push('  样本:')
     for (const s of r.dups.financeSamples) lines.push(`    · ${s}`)
   }
   return lines.join('\n')
@@ -548,10 +699,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Row({ k, children }: { k: string; children: React.ReactNode }) {
   return (
-    <div
-      className="flex items-baseline justify-between gap-3 py-0.5"
-      style={{ fontSize: 12 }}
-    >
+    <div className="flex items-baseline justify-between gap-3 py-0.5" style={{ fontSize: 12 }}>
       <span style={{ color: 'var(--bn-text-tertiary)', flexShrink: 0 }}>{k}</span>
       <span className="text-right" style={{ color: 'var(--bn-text-primary)', minWidth: 0 }}>
         {children}
@@ -561,9 +709,7 @@ function Row({ k, children }: { k: string; children: React.ReactNode }) {
 }
 
 function DupValue({ n }: { n: number }) {
-  if (n === 0) {
-    return <span style={{ color: 'var(--bn-positive)' }}>✓ 0</span>
-  }
+  if (n === 0) return <span style={{ color: 'var(--bn-positive)' }}>✓ 0</span>
   return (
     <span className="bn-mono" style={{ color: 'var(--bn-negative)', fontWeight: 600 }}>
       {n}
@@ -573,11 +719,11 @@ function DupValue({ n }: { n: number }) {
 
 function SyncStatusPill({ status }: { status: SyncEngineState['status'] }) {
   const map: Record<SyncEngineState['status'], { label: string; color: string }> = {
-    idle:    { label: '✓ 就绪',  color: 'var(--bn-positive)' },
-    pushing: { label: '推送中',  color: '#E0A75F' },
-    pulling: { label: '拉取中',  color: '#E0A75F' },
-    offline: { label: '离线',    color: 'var(--bn-text-tertiary)' },
-    error:   { label: '⚠ 失败',  color: 'var(--bn-negative)' },
+    idle:    { label: '✓ 就绪', color: 'var(--bn-positive)' },
+    pushing: { label: '推送中', color: '#E0A75F' },
+    pulling: { label: '拉取中', color: '#E0A75F' },
+    offline: { label: '离线',   color: 'var(--bn-text-tertiary)' },
+    error:   { label: '⚠ 失败', color: 'var(--bn-negative)' },
   }
   const { label, color } = map[status] ?? { label: status, color: 'var(--bn-text-secondary)' }
   return (
